@@ -291,6 +291,9 @@ public sealed class RelayEndpointTests : IDisposable
     {
         public TaskCompletionSource<Exception?> Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public Task<UpstreamResult> CreateResponseAsync(string deployment, JsonObject request, Func<PipelineResponse, CancellationToken, Task> onStream, CancellationToken cancellationToken) =>
+            inner.CreateResponseAsync(deployment, request, onStream, cancellationToken);
+
         public async Task<UpstreamResult> CompleteChatAsync(string deployment, JsonObject request, Func<PipelineResponse, CancellationToken, Task> onStream, CancellationToken cancellationToken)
         {
             try

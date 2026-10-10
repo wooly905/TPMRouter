@@ -25,36 +25,69 @@ public sealed class RelayService(IOptions<RelayOptions> options,
     private readonly Dictionary<string, DeploymentTarget> _deployments =
         options.Value.GetDeploymentTargets().ToDictionary(d => d.Key, StringComparer.Ordinal);
 
-    public async Task<RelayOutcome> RelayChatAsync(ChatCompletionsRequest request,
-                                                   Func<PipelineResponse, CancellationToken, Task> onStream,
-                                                   Func<bool> hasStarted,
-                                                   CancellationToken requestAborted)
+    public Task<RelayOutcome> RelayChatAsync(ChatCompletionsRequest request,
+                                             Func<PipelineResponse, CancellationToken, Task> onStream,
+                                             Func<bool> hasStarted,
+                                             CancellationToken requestAborted) =>
+        RelayInferenceAsync(request.Body,
+                            request.Model,
+                            request.MaxOutputTokens,
+                            request.Choices,
+                            request.Body["max_tokens"] is not null ? "max_tokens" : "max_completion_tokens",
+                            upstream.CompleteChatAsync,
+                            onStream,
+                            hasStarted,
+                            requestAborted);
+
+    public Task<RelayOutcome> RelayResponseAsync(ResponsesRequest request,
+                                                 Func<PipelineResponse, CancellationToken, Task> onStream,
+                                                 Func<bool> hasStarted,
+                                                 CancellationToken requestAborted) =>
+        RelayInferenceAsync(request.Body,
+                            request.Model,
+                            request.MaxOutputTokens,
+                            1,
+                            "max_output_tokens",
+                            upstream.CreateResponseAsync,
+                            onStream,
+                            hasStarted,
+                            requestAborted);
+
+    private async Task<RelayOutcome> RelayInferenceAsync(JsonObject requestBody,
+                                                         string model,
+                                                         int? maxOutputTokens,
+                                                         int choices,
+                                                         string tokenField,
+                                                         Func<string, JsonObject, Func<PipelineResponse, CancellationToken, Task>, CancellationToken, Task<UpstreamResult>> complete,
+                                                         Func<PipelineResponse, CancellationToken, Task> onStream,
+                                                         Func<bool> hasStarted,
+                                                         CancellationToken requestAborted)
     {
-        if (request.Body.ToJsonString().Length > _options.MaxInputCharacters)
+        if (requestBody.ToJsonString().Length > _options.MaxInputCharacters)
         {
             return new RelayOutcome(413, Error: "The input is too long.");
         }
 
         List<DeploymentTarget> candidates = _deployments.Values
-            .Where(d => request.Model == "auto" || d.Deployment.Model == request.Model).ToList();
+            .Where(d => model == "auto" || d.Deployment.Model == model).ToList();
         if (candidates.Count == 0)
         {
             return new RelayOutcome(404, Error: "The requested model is not available.", ErrorParam: "model", ErrorCode: "model_not_found");
         }
 
-        candidates = candidates.Where(d => request.MaxOutputTokens is null || request.MaxOutputTokens <= d.Deployment.MaxOutputTokens).ToList();
+        candidates = candidates.Where(d => maxOutputTokens is null || maxOutputTokens <= d.Deployment.MaxOutputTokens).ToList();
         if (candidates.Count == 0)
         {
             return new RelayOutcome(400, Error: "The requested output limit exceeds the configured limit for this model.",
-                                    ErrorParam: request.Body["max_tokens"] is not null ? "max_tokens" : "max_completion_tokens");
+                                    ErrorParam: tokenField);
         }
 
-        int promptTokens = estimator.CountPromptTokens(request.Body);
+        int promptTokens = estimator.CountPromptTokens(requestBody);
         Dictionary<string, long> estimates = new(StringComparer.Ordinal);
         foreach (DeploymentTarget target in candidates)
         {
             DeploymentOptions deployment = target.Deployment;
-            long estimate = promptTokens + (long)request.Choices * (request.MaxOutputTokens ?? deployment.MaxOutputTokens);
+            long estimate = promptTokens + (long)choices * (maxOutputTokens ?? deployment.MaxOutputTokens);
             if (DeploymentSelector.FitsDeployment(estimate, deployment, _options.SafetyFactor))
             {
                 estimates[target.Key] = estimate;
@@ -68,14 +101,14 @@ public sealed class RelayService(IOptions<RelayOptions> options,
 
         return await RelayCoreAsync(estimates, async (selected, token) =>
         {
-            JsonObject body = (JsonObject)request.Body.DeepClone();
+            JsonObject body = (JsonObject)requestBody.DeepClone();
             body["model"] = selected.Deployment.Name;
-            if (request.MaxOutputTokens is null)
+            if (maxOutputTokens is null)
             {
-                body["max_completion_tokens"] = selected.Deployment.MaxOutputTokens;
+                body[tokenField] = selected.Deployment.MaxOutputTokens;
             }
 
-            return await upstream.CompleteChatAsync(selected.Key, body, async (response, streamToken) =>
+            return await complete(selected.Key, body, async (response, streamToken) =>
             {
                 RateLimitHeaders headers = AzureOpenAIUpstreamClient.ReadRateLimits(response.Headers);
                 await tracker.RecordHeadersAsync(selected.Key, headers.RemainingTokens, headers.RemainingRequests, timeProvider.GetUtcNow());
@@ -85,9 +118,9 @@ public sealed class RelayService(IOptions<RelayOptions> options,
     }
 
     private async Task<RelayOutcome> RelayCoreAsync(Dictionary<string, long> estimates,
-                                                  Func<DeploymentTarget, CancellationToken, Task<UpstreamResult>> complete,
-                                                  Func<bool>? hasStarted,
-                                                  CancellationToken requestAborted)
+                                                    Func<DeploymentTarget, CancellationToken, Task<UpstreamResult>> complete,
+                                                    Func<bool>? hasStarted,
+                                                    CancellationToken requestAborted)
     {
         DateTimeOffset start = timeProvider.GetUtcNow();
         TimeSpan deadline = TimeSpan.FromSeconds(_options.RequestDeadlineSeconds);

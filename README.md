@@ -1,6 +1,6 @@
 # TPMRouter
 
-TPMRouter is an ASP.NET Core (.NET 10) web API that sits in front of multiple Azure OpenAI resources, each with its own deployments and credentials. Clients use the OpenAI-compatible Chat Completions endpoint. The router picks an eligible deployment with token budget and returns its response.
+TPMRouter is an ASP.NET Core (.NET 10) web API that sits in front of multiple Azure OpenAI resources, each with its own deployments and credentials. Clients use the OpenAI-compatible Responses API for text, reasoning, and function calling. The router picks an eligible deployment with token budget and returns its response.
 
 With `model: "auto"`, the router chooses from configured deployments across all endpoints based on their tokens-per-minute (TPM) and requests-per-minute (RPM) limits. An explicit model must match a configured deployment's `Model` exactly (case-sensitive) and restricts routing and failover to deployments with that alias, including deployments on different endpoints. `Name` identifies the actual Azure deployment; it can differ from `Model`.
 
@@ -11,7 +11,7 @@ The animation uses illustrative effective token budgets. Each request reserves e
 ## How it works
 
 1. The router validates the client API key and input size.
-2. It estimates tokens for each eligible deployment using the `o200k_base` tokenizer. Chat Completions includes all messages, tool definitions, and structured output schemas, plus `n` times the requested output limit (or the deployment's `MaxOutputTokens` when omitted).
+2. It estimates tokens for each eligible deployment using the `o200k_base` tokenizer. Responses includes full `input` history, instructions, tool definitions, and structured output schemas, plus the requested output limit (or the deployment's `MaxOutputTokens` when omitted). Chat Completions includes all messages and schemas, plus `n` times its output limit.
 3. It selects a deployment from those that are not in cooldown and have enough TPM and RPM left in the last 60 seconds:
    - lowest `Priority` value first, compared globally across endpoints (values may repeat),
    - then highest remaining ratio (`min(remaining TPM %, remaining RPM %)` when a local RPM limit is configured; otherwise remaining TPM %),
@@ -48,7 +48,7 @@ Settings live under the `Relay` section of `src/TPMRouter.Api/appsettings.json`.
 | `Endpoints[].Id` | Required, unique, stable endpoint ID used in budget keys, status, logs, and metrics. |
 | `Endpoints[].Endpoint` | Unique HTTP/HTTPS resource root URI; the router appends `/openai/v1/`. Do not include an API path, query, or fragment. |
 | `Endpoints[].ApiKey` | API key for this Azure OpenAI resource. **Secret.** |
-| `ClientApiKey` | Client key for Chat Completions (Bearer). **Secret.** |
+| `ClientApiKey` | Client key for Responses and Chat Completions (Bearer). **Secret.** |
 | `AdminApiKey` | Key required for `GET /relay/status`. **Secret.** |
 | `SafetyFactor` | Fraction of TPM/RPM the relay may use (default `0.9`). |
 | `MaxInputCharacters` | Max characters in the request JSON after serialization, including options and schemas (default `100000`). |
@@ -165,9 +165,48 @@ The default `http` launch profile uses `http://localhost:5042`. The `https` prof
 
 ## API
 
-Chat Completions requires `Authorization: Bearer <client-key>`. `/relay/status` requires `X-Api-Key: <admin-key>`.
+Responses and Chat Completions require `Authorization: Bearer <client-key>`. `/relay/status` requires `X-Api-Key: <admin-key>`.
 
-The inference API exposes `POST /v1/chat/completions`; it does not expose other OpenAI API endpoints. The former `POST /relay` endpoint has been removed and returns `404`.
+The inference API exposes `POST /v1/responses` and `POST /v1/chat/completions`. The former `POST /relay` endpoint has been removed and returns `404`.
+
+### `POST /v1/responses`
+
+Use the [Responses API format](https://developers.openai.com/api/docs/guides/migrate-to-responses) for reasoning and function calling. No `api-version` query parameter is required. For `gpt-6.1-sol`, tool calling requires Responses; Chat Completions tool calling and `reasoning_effort: "none"` are unsupported, as documented in the [model guide](https://developers.openai.com/api/docs/models/gpt-6.1-sol).
+
+```bash
+curl "http://localhost:5042/v1/responses" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <client-key>" \
+  -d '{"model":"auto","input":[{"role":"user","content":"Look up the weather in Taipei."}],"reasoning":{"effort":"medium"},"max_output_tokens":2000,"store":false,"include":["reasoning.encrypted_content"],"tools":[{"type":"function","name":"get_weather","description":"Get current weather for a city.","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false},"strict":true}],"tool_choice":"auto"}'
+```
+
+`model` and `input` are required. `input` accepts a text string or a non-empty array of input items, including text messages, reasoning items, `function_call`, and `function_call_output`. Image, audio, and file content parts are unsupported. Use `max_output_tokens` and `reasoning: {"effort": "medium"}` instead of Chat Completions fields. Function tools use top-level `name`, `parameters`, and `strict`, without the Chat Completions `function` wrapper. Remaining options are forwarded unchanged; the selected upstream deployment must support Responses and the requested options.
+
+The router uses the same global priorities, rolling TPM/RPM budgets, cooldowns, and failover as Chat Completions. Both APIs share each deployment's budget. It replaces `model` with the selected deployment name and supplies `max_output_tokens` from `MaxOutputTokens` when omitted. An explicit output limit excludes deployments whose cap is smaller; the limit is never silently reduced. Estimates include instructions, all input items and tool results, tools, and `text` output schemas.
+
+The complete upstream response is preserved, including `output`, function arguments, reasoning items, usage, and response status. To continue a function call, execute each returned `output` item whose `type` is `function_call` in the client. Append **all** returned output items to your existing input history, including reasoning items, then append `{"type":"function_call_output","call_id":"<returned-call-id>","output":"<tool-result>"}` for each call and send the full history to `/v1/responses` again with `model: "auto"`. With `store: false`, request `include: ["reasoning.encrypted_content"]` and preserve that content when replaying reasoning history.
+
+Each request must carry its full history so the router can estimate its token budget and route across endpoints. `previous_response_id`, `conversation`, stored `item_reference` inputs, and `background: true` return `400`. Retrieval and conversation-management endpoints are not exposed. Use synchronous requests or `stream: true`.
+
+Streaming preserves native Responses SSE events, including function argument deltas and `response.completed`, `response.incomplete`, or `response.failed`; it does not add the Chat Completions `[DONE]` marker. A missing terminal event, timeout, or cancellation aborts the stream after it starts, without switching deployments. Errors before streaming starts use the same OpenAI-compatible error format and status codes as Chat Completions.
+
+OpenAI SDK clients can set their base URL to `https://<router-host>/v1/` and use `ClientApiKey`. For the pinned OpenAI .NET SDK:
+
+```csharp
+using System.ClientModel;
+using OpenAI.Responses;
+
+#pragma warning disable OPENAI001 // ResponsesClient is experimental in this SDK version.
+
+ResponsesClient client = new(new ApiKeyCredential("<client-key>"), new ResponsesClientOptions
+{
+    Endpoint = new Uri("https://<router-host>/v1/"),
+});
+CreateResponseOptions options = new() { Model = "auto", StoredOutputEnabled = false };
+options.InputItems.Add(ResponseItem.CreateUserMessageItem("Hello"));
+ResponseResult response = await client.CreateResponseAsync(options);
+Console.WriteLine(response.GetOutputText());
+```
 
 ### `POST /v1/chat/completions`
 

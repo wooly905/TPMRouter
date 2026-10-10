@@ -6,13 +6,17 @@ using System.Text.Json.Nodes;
 using Microsoft.Extensions.Options;
 using OpenAI;
 using OpenAI.Chat;
+using OpenAI.Responses;
 using TPMRouter.Api.Options;
+
+#pragma warning disable OPENAI001 // ResponsesClient is experimental in the pinned OpenAI SDK.
 
 namespace TPMRouter.Api.Upstream;
 
 public interface IUpstreamClient
 {
     Task<UpstreamResult> CompleteChatAsync(string deployment, JsonObject request, Func<PipelineResponse, CancellationToken, Task> onStream, CancellationToken cancellationToken);
+    Task<UpstreamResult> CreateResponseAsync(string deployment, JsonObject request, Func<PipelineResponse, CancellationToken, Task> onStream, CancellationToken cancellationToken);
 }
 
 public readonly record struct RateLimitHeaders(long? RemainingTokens, long? RemainingRequests, TimeSpan? RetryAfter);
@@ -27,10 +31,12 @@ public sealed record UpstreamResult(int Status,
 public sealed class AzureOpenAIUpstreamClient : IUpstreamClient
 {
     private readonly Dictionary<string, ChatClient> _chatClients;
+    private readonly Dictionary<string, ResponsesClient> _responseClients;
 
     public AzureOpenAIUpstreamClient(IOptions<RelayOptions> options)
     {
         _chatClients = new(StringComparer.Ordinal);
+        _responseClients = new(StringComparer.Ordinal);
         foreach (EndpointOptions endpoint in options.Value.Endpoints)
         {
             OpenAIClient client = new(new ApiKeyCredential(endpoint.ApiKey), new OpenAIClientOptions
@@ -44,20 +50,33 @@ public sealed class AzureOpenAIUpstreamClient : IUpstreamClient
             {
                 DeploymentTarget target = new(endpoint.Id, deployment);
                 _chatClients.Add(target.Key, client.GetChatClient(deployment.Name));
+                _responseClients.Add(target.Key, client.GetResponsesClient());
             }
         }
     }
 
-    public async Task<UpstreamResult> CompleteChatAsync(string deployment,
-                                                        JsonObject request,
-                                                        Func<PipelineResponse, CancellationToken, Task> onStream,
-                                                        CancellationToken cancellationToken)
+    public Task<UpstreamResult> CompleteChatAsync(string deployment,
+                                                  JsonObject request,
+                                                  Func<PipelineResponse, CancellationToken, Task> onStream,
+                                                  CancellationToken cancellationToken) =>
+        CompleteAsync(request, _chatClients[deployment].CompleteChatAsync, onStream, cancellationToken);
+
+    public Task<UpstreamResult> CreateResponseAsync(string deployment,
+                                                    JsonObject request,
+                                                    Func<PipelineResponse, CancellationToken, Task> onStream,
+                                                    CancellationToken cancellationToken) =>
+        CompleteAsync(request, _responseClients[deployment].CreateResponseAsync, onStream, cancellationToken);
+
+    private static async Task<UpstreamResult> CompleteAsync(JsonObject request,
+                                                            Func<BinaryContent, RequestOptions, Task<ClientResult>> send,
+                                                            Func<PipelineResponse, CancellationToken, Task> onStream,
+                                                            CancellationToken cancellationToken)
     {
         bool stream = request["stream"]?.GetValue<bool>() == true;
         using BinaryContent content = BinaryContent.Create(BinaryData.FromString(request.ToJsonString()));
         try
         {
-            ClientResult result = await _chatClients[deployment].CompleteChatAsync(content, new RequestOptions
+            ClientResult result = await send(content, new RequestOptions
             {
                 CancellationToken = cancellationToken,
                 BufferResponse = !stream,

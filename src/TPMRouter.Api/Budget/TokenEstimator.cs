@@ -11,7 +11,7 @@ public sealed class TokenEstimator
     {
         // Include message framing, tool definitions, and structured output schemas in the conservative estimate.
         int count = 3;
-        foreach (string field in new[] { "messages", "tools", "functions", "response_format" })
+        foreach (string field in new[] { "messages", "input", "instructions", "tools", "functions", "response_format", "text" })
         {
             if (request[field] is { } value)
             {
