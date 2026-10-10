@@ -153,6 +153,18 @@ dotnet run --project src/TPMRouter.Api
 
 The default `http` launch profile uses `http://localhost:5042`. The `https` profile (`--launch-profile https`) also exposes `https://localhost:7088`. Use the listening addresses printed at startup if you override these settings.
 
+## Deployment
+
+The `Deploy to Azure Web App` GitHub Actions workflow runs manually through **Actions > Deploy to Azure Web App > Run workflow**. It builds the solution, runs unit tests, publishes the API for Linux x64, and deploys to `TPMRouterApi`. The App Service must provide the .NET 10 runtime. The workflow verifies the deployed commit through `/deployment.txt`.
+
+Azure authentication uses OIDC and the GitHub `production` environment. Configure its `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID` secrets. The deployment identity needs the `Website Contributor` role scoped to this App Service and a federated credential with:
+
+- Issuer: `https://token.actions.githubusercontent.com`
+- Subject: `repo:wooly905/TPMRouter:environment:production`
+- Audience: `api://AzureADTokenExchange`
+
+The deployment package excludes `appsettings.json` and `appsettings.Development.json` and uses `clean: false` to preserve existing server configuration. Update runtime settings on Azure instead of relying on the repository's example configuration. The workflow restarts the App Service after deployment.
+
 ## API
 
 Chat Completions requires `Authorization: Bearer <client-key>`. `/relay/status` requires `X-Api-Key: <admin-key>`.

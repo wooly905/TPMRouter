@@ -1,0 +1,78 @@
+name: Deploy to Azure Web App
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AZURE_WEBAPP_NAME: TPMRouterApi
+  AZURE_RESOURCE_GROUP: AnswerCode2026031621230ResourceGroup
+  AZURE_WEBAPP_URL: https://tpmrouterapi-babxfncdfdbgegf5.westus3-01.azurewebsites.net
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore TPMRouter.slnx
+
+      - name: Build
+        run: dotnet build TPMRouter.slnx --configuration Release --no-restore
+
+      - name: Run unit tests
+        run: dotnet test tests/TPMRouter.UnitTests/TPMRouter.UnitTests.csproj --configuration Release --no-build --no-restore
+
+      - name: Publish
+        run: dotnet publish src/TPMRouter.Api/TPMRouter.Api.csproj --configuration Release --runtime linux-x64 --self-contained false --output ./publish
+
+      - name: Preserve server configuration
+        run: rm ./publish/appsettings.json ./publish/appsettings.Development.json
+
+      - name: Stamp deployment commit
+        run: printf '%s' "$GITHUB_SHA" > ./publish/wwwroot/deployment.txt
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          resource-group-name: ${{ env.AZURE_RESOURCE_GROUP }}
+          package: ./publish
+          clean: false
+          restart: true
+
+      - name: Verify deployed commit
+        shell: bash
+        run: |
+          for attempt in {1..12}; do
+            deployed_sha="$(curl --fail --silent --show-error \
+              --header 'Cache-Control: no-cache, no-store' \
+              "${AZURE_WEBAPP_URL}/deployment.txt?sha=${GITHUB_SHA}&attempt=${attempt}" || true)"
+            if [[ "$deployed_sha" == "$GITHUB_SHA" ]]; then
+              echo "Verified deployment of ${GITHUB_SHA}."
+              exit 0
+            fi
+            echo "Attempt ${attempt}: expected ${GITHUB_SHA}, received '${deployed_sha}'."
+            sleep 10
+          done
+          echo "::error::Azure Web App is not serving the deployed commit ${GITHUB_SHA}."
+          exit 1
