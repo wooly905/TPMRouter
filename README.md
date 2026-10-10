@@ -4,6 +4,10 @@ TPMRouter is an ASP.NET Core (.NET 10) web API that sits in front of multiple Az
 
 With `model: "auto"`, the router chooses from configured deployments across all endpoints based on their tokens-per-minute (TPM) and requests-per-minute (RPM) limits. An explicit model must match a configured deployment's `Model` exactly (case-sensitive) and restricts routing and failover to deployments with that alias, including deployments on different endpoints. `Name` identifies the actual Azure deployment; it can differ from `Model`.
 
+![TPM routing: requests follow global priority, switch models across endpoints when token budgets cannot fit the next request, and regain capacity as the 60-second rolling window expires.](docs/assets/tpm-routing.gif)
+
+The animation uses illustrative effective token budgets. Each request reserves estimated input and output tokens; lower priority numbers are preferred globally across endpoints.
+
 ## How it works
 
 1. The router validates the client API key and input size.
