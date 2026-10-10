@@ -161,7 +161,7 @@ The default `http` launch profile uses `http://localhost:5042`. The `https` prof
 
 ## Deployment
 
-The `Deploy to Azure Web App` GitHub Actions workflow runs manually through **Actions > Deploy to Azure Web App > Run workflow**. It builds the solution, runs unit tests, publishes the API for Linux x64, and deploys to `TPMRouterApi`. The App Service must provide the .NET 10 runtime. The workflow verifies the deployed commit through `/deployment.txt`.
+The `Deploy to Azure Web App` GitHub Actions workflow runs manually through **Actions > Deploy to Azure Web App > Run workflow**. The deployment job runs only when both the original actor and the actor starting the current run are the repository owner; other users' dispatches and re-runs skip deployment. It builds the solution, runs unit tests, publishes the API for Linux x64, and deploys to `TPMRouterApi`. The App Service must provide the .NET 10 runtime. The workflow verifies the deployed commit through `/deployment.txt`.
 
 Azure authentication uses OIDC and the GitHub `production` environment. Configure its `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID` secrets. The deployment identity needs the `Website Contributor` role scoped to this App Service and a federated credential with:
 
