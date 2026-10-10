@@ -143,13 +143,13 @@ dotnet user-secrets set "Relay:ClientApiKey" "<client-key>"
 dotnet user-secrets set "Relay:AdminApiKey" "<admin-key>"
 ```
 
-Keep each endpoint's `Endpoint` and `ApiKey` empty in `appsettings.json`. In Azure App Service, open **Settings > Environment variables > App settings** and supply:
+Keep each endpoint's `Endpoint` and `ApiKey` empty in `appsettings.json`. Supply runtime values through environment variables:
 
 - `Relay__Endpoints__0__Endpoint` and `Relay__Endpoints__0__ApiKey` for the first endpoint.
 - `Relay__Endpoints__1__Endpoint` and `Relay__Endpoints__1__ApiKey` for the second endpoint.
 - `Relay__ClientApiKey` and `Relay__AdminApiKey` for API authentication.
 
-Array indexes start at zero and must match the endpoint order in `appsettings.json`. Save and apply the settings before deploying; environment variables override the empty JSON values. Model, TPM/RPM, and priority settings remain in the deployed JSON file. See the [App Service configuration documentation](https://learn.microsoft.com/en-us/azure/app-service/configure-common). Azure Key Vault secrets can be supplied through your deployment's secret injection; the application does not register a Key Vault configuration provider.
+Array indexes start at zero and must match the endpoint order in `appsettings.json`. Environment variables override the empty JSON values. Model, TPM/RPM, and priority settings remain in `appsettings.json`.
 
 ## Run
 
@@ -158,18 +158,6 @@ dotnet run --project src/TPMRouter.Api
 ```
 
 The default `http` launch profile uses `http://localhost:5042`. The `https` profile (`--launch-profile https`) also exposes `https://localhost:7088`. Use the listening addresses printed at startup if you override these settings.
-
-## Deployment
-
-The `Deploy to Azure Web App` GitHub Actions workflow runs manually through **Actions > Deploy to Azure Web App > Run workflow**. The deployment job runs only when both the original actor and the actor starting the current run are the repository owner; other users' dispatches and re-runs skip deployment. It builds the solution, runs unit tests, publishes the API for Linux x64, and deploys to `TPMRouterApi`. The App Service must provide the .NET 10 runtime. The workflow verifies the deployed commit through `/deployment.txt`.
-
-Azure authentication uses OIDC and the GitHub `production` environment. Configure its `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID` secrets. The deployment identity needs the `Website Contributor` role scoped to this App Service and a federated credential with:
-
-- Issuer: `https://token.actions.githubusercontent.com`
-- Subject: `repo:wooly905/TPMRouter:environment:production`
-- Audience: `api://AzureADTokenExchange`
-
-The deployment package includes `appsettings.json` with empty endpoint URLs and API keys and excludes `appsettings.Development.json`. Configure the required App Service environment variables described above before deploying. The workflow uses `clean: false` and restarts the App Service after deployment.
 
 ## API
 
