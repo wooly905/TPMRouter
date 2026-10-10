@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/TPMRouter.Api/TPMRouter.Api.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/TPMRouter.IntegrationTests/TPMRouter.IntegrationTests.csproj" />
+    <Project Path="tests/TPMRouter.UnitTests/TPMRouter.UnitTests.csproj" />
+  </Folder>
+</Solution>

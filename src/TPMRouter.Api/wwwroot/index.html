@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TPMRouter · TPM / RPM 狀態</title>
+    <style>
+        :root { color-scheme: light; font-family: system-ui, sans-serif; color: #172b3a; background: #f4f7fa; }
+        * { box-sizing: border-box; }
+        body { margin: 0; }
+        main { max-width: 1600px; margin: auto; padding: 16px 20px; }
+        .page-heading, .page-status { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; }
+        h1 { margin: 0; font-size: 22px; letter-spacing: -.5px; }
+        p { color: #596d7d; line-height: 1.4; margin: 6px 0; font-size: 12px; }
+        button { font: inherit; font-size: 12px; padding: 6px 12px; border-radius: 6px; border: 0; background: #165bc4; color: white; cursor: pointer; }
+        button:disabled { opacity: .6; cursor: wait; }
+        button:focus-visible { outline: 3px solid #98bcf3; outline-offset: 2px; }
+        #message { margin: 6px 0 10px; }
+        #message.error { color: #b42318; }
+        .endpoint { background: white; border: 1px solid #dce4eb; border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
+        h2 { font-size: 14px; margin: 0; padding: 8px 10px; border-bottom: 1px solid #e6edf2; }
+        .models { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px; padding: 10px; }
+        .model-card { border: 1px solid #e6edf2; border-radius: 6px; padding: 10px; min-width: 0; }
+        .model-heading { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
+        h3 { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
+        .deployment, .detail { display: block; color: #596d7d; font-size: 11px; margin-top: 2px; }
+        .deployment { overflow-wrap: anywhere; }
+        .charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 10px; }
+        .usage { min-width: 0; font-variant-numeric: tabular-nums; }
+        .usage-label { display: flex; justify-content: space-between; gap: 4px; font-size: 11px; margin-bottom: 3px; }
+        .usage-values { margin: 0 0 4px; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+        .bar { height: 12px; border-radius: 3px; background: #e6edf6; overflow: hidden; }
+        .bar-fill { height: 100%; background: #165bc4; }
+        .rpm .bar { background: #e1f1ee; }
+        .rpm .bar-fill { background: #16826b; }
+        .usage .detail { margin-top: 4px; }
+        .legend { font-size: 11px; margin: 6px 0 10px; }
+        .badge { display: inline-block; padding: 2px 7px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+        .ready { background: #e8f7ef; color: #166840; }
+        .limited { background: #fff3db; color: #8b5800; }
+        .cooldown { background: #fdeceb; color: #b42318; }
+        @media (max-width: 600px) { main { padding: 12px 10px; } .models { grid-template-columns: 1fr; padding: 8px; } }
+    </style>
+</head>
+<body>
+    <main>
+        <div class="page-heading">
+            <h1>TPMRouter 狀態</h1>
+            <button id="refresh" type="button">更新狀態</button>
+        </div>
+        <p>所有 endpoint 的 model 預算，每 10 秒自動更新。TPM 為 token 額度，RPM 為 request 額度。</p>
+        <div class="page-status">
+            <p id="message" role="status" aria-live="polite">載入狀態中…</p>
+            <p class="legend">實色：已預留 token／已使用 request · 淺色柱底：設定上限（100%）</p>
+        </div>
+        <div id="endpoints"></div>
+        <p>預算採最近 60 秒的 rolling window；預留 token 並非實際用量。可用額度已套用 SafetyFactor 與 upstream rate-limit headers；RPM 設為 0 表示未設定本地限制。</p>
+    </main>
+    <script>
+        const refreshButton = document.getElementById('refresh');
+        const message = document.getElementById('message');
+        const endpoints = document.getElementById('endpoints');
+        const numbers = new Intl.NumberFormat('zh-TW');
+        let loading = false;
+        let lastUpdated = null;
+
+        function element(tag, text, className) {
+            const node = document.createElement(tag);
+            if (text !== undefined) node.textContent = text;
+            if (className) node.className = className;
+            return node;
+        }
+
+        function number(value) {
+            return value === null ? '無限制' : numbers.format(value);
+        }
+
+        function usageChart(label, used, limit, available, className) {
+            const chart = element('div', undefined, `usage ${className}`);
+            const heading = element('div', undefined, 'usage-label');
+            heading.append(element('span', label));
+            if (limit > 0) {
+                const percentage = used / limit * 100;
+                heading.append(element('span', `${percentage.toFixed(1)}%`));
+                chart.append(heading, element('p', `${number(used)} / ${number(limit)}`, 'usage-values'));
+                const bar = element('div', undefined, 'bar');
+                bar.setAttribute('role', 'img');
+                bar.setAttribute('aria-label', `${label}：${number(used)}，上限 ${number(limit)}，${percentage.toFixed(1)}%`);
+                const fill = element('div', undefined, 'bar-fill');
+                fill.style.width = `${Math.min(100, Math.max(0, percentage))}%`;
+                bar.append(fill);
+                chart.append(bar);
+            } else {
+                chart.append(heading, element('p', `${number(used)} / 未設定本地上限`, 'usage-values'));
+            }
+            chart.append(element('span', `目前可用：${number(available)}`, 'detail'));
+            return chart;
+        }
+
+        function render(statuses) {
+            const groups = new Map();
+            for (const status of statuses) {
+                if (!groups.has(status.endpointId)) groups.set(status.endpointId, []);
+                groups.get(status.endpointId).push(status);
+            }
+
+            const content = document.createDocumentFragment();
+            for (const [endpointId, deployments] of groups) {
+                const section = element('section', undefined, 'endpoint');
+                section.append(element('h2', endpointId));
+                const models = element('div', undefined, 'models');
+                for (const status of deployments) {
+                    const card = element('article', undefined, 'model-card');
+                    const heading = element('div', undefined, 'model-heading');
+                    const model = element('div');
+                    model.append(element('h3', status.model),
+                        element('span', `${status.name} · Priority ${status.priority}`, 'deployment'));
+                    const state = element('div');
+                    const cooling = status.cooldownUntil && Date.parse(status.cooldownUntil) > Date.now();
+                    const limited = status.availableTokens <= 0
+                        || (status.availableRequests !== null && status.availableRequests <= 0);
+                    state.append(element('span', cooling ? 'Cooldown' : limited ? '額度已滿' : '可用',
+                        `badge ${cooling ? 'cooldown' : limited ? 'limited' : 'ready'}`));
+                    if (cooling) state.append(element('span', `至 ${new Date(status.cooldownUntil).toLocaleTimeString('zh-TW')}`, 'detail'));
+                    heading.append(model, state);
+                    const charts = element('div', undefined, 'charts');
+                    charts.append(
+                        usageChart('TPM 預留／上限', status.reservedTokens, status.tokensPerMinute, status.availableTokens, 'tpm'),
+                        usageChart('RPM 已用／上限', status.requestsInWindow, status.requestsPerMinute, status.availableRequests, 'rpm'));
+                    card.append(heading, charts);
+                    models.append(card);
+                }
+                section.append(models);
+                content.append(section);
+            }
+            if (statuses.length === 0) content.append(element('p', '目前沒有 model 狀態。'));
+            endpoints.replaceChildren(content);
+        }
+
+        async function refresh() {
+            if (loading) return;
+            loading = true;
+            refreshButton.disabled = true;
+            message.className = '';
+            message.textContent = '更新中…';
+            try {
+                const response = await fetch('./relay/dashboard/status', {
+                    cache: 'no-store',
+                    signal: AbortSignal.timeout(15000)
+                });
+                if (!response.ok) {
+                    throw new Error(`載入失敗（HTTP ${response.status}）。`);
+                }
+                render(await response.json());
+                lastUpdated = new Date().toLocaleString('zh-TW');
+                message.textContent = `上次更新：${lastUpdated} · 每 10 秒自動更新`;
+            } catch (error) {
+                message.className = 'error';
+                message.textContent = `${error.message}${lastUpdated ? ` 顯示舊資料，上次更新：${lastUpdated}。` : ''} 10 秒後自動重試。`;
+            } finally {
+                loading = false;
+                refreshButton.disabled = false;
+            }
+        }
+
+        refreshButton.addEventListener('click', refresh);
+        refresh();
+        setInterval(refresh, 10000);
+    </script>
+</body>
+</html>
