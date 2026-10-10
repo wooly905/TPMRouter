@@ -38,8 +38,8 @@ jobs:
       - name: Publish
         run: dotnet publish src/TPMRouter.Api/TPMRouter.Api.csproj --configuration Release --runtime linux-x64 --self-contained false --output ./publish
 
-      - name: Preserve server configuration
-        run: rm ./publish/appsettings.json ./publish/appsettings.Development.json
+      - name: Exclude development configuration
+        run: rm ./publish/appsettings.Development.json
 
       - name: Stamp deployment commit
         run: printf '%s' "$GITHUB_SHA" > ./publish/wwwroot/deployment.txt

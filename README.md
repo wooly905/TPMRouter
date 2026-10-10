@@ -143,7 +143,13 @@ dotnet user-secrets set "Relay:ClientApiKey" "<client-key>"
 dotnet user-secrets set "Relay:AdminApiKey" "<admin-key>"
 ```
 
-In production use environment variables (for example `Relay__Endpoints__0__ApiKey`, `Relay__Endpoints__1__ApiKey`, and `Relay__Endpoints__0__Deployments__0__TokensPerMinute`). Azure Key Vault secrets can be supplied through your deployment's secret injection; the application does not register a Key Vault configuration provider.
+Keep each endpoint's `Endpoint` and `ApiKey` empty in `appsettings.json`. In Azure App Service, open **Settings > Environment variables > App settings** and supply:
+
+- `Relay__Endpoints__0__Endpoint` and `Relay__Endpoints__0__ApiKey` for the first endpoint.
+- `Relay__Endpoints__1__Endpoint` and `Relay__Endpoints__1__ApiKey` for the second endpoint.
+- `Relay__ClientApiKey` and `Relay__AdminApiKey` for API authentication.
+
+Array indexes start at zero and must match the endpoint order in `appsettings.json`. Save and apply the settings before deploying; environment variables override the empty JSON values. Model, TPM/RPM, and priority settings remain in the deployed JSON file. See the [App Service configuration documentation](https://learn.microsoft.com/en-us/azure/app-service/configure-common). Azure Key Vault secrets can be supplied through your deployment's secret injection; the application does not register a Key Vault configuration provider.
 
 ## Run
 
@@ -163,7 +169,7 @@ Azure authentication uses OIDC and the GitHub `production` environment. Configur
 - Subject: `repo:wooly905/TPMRouter:environment:production`
 - Audience: `api://AzureADTokenExchange`
 
-The deployment package excludes `appsettings.json` and `appsettings.Development.json` and uses `clean: false` to preserve existing server configuration. Update runtime settings on Azure instead of relying on the repository's example configuration. The workflow restarts the App Service after deployment.
+The deployment package includes `appsettings.json` with empty endpoint URLs and API keys and excludes `appsettings.Development.json`. Configure the required App Service environment variables described above before deploying. The workflow uses `clean: false` and restarts the App Service after deployment.
 
 ## API
 
