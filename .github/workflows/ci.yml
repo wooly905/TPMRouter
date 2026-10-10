@@ -1,0 +1,28 @@
+name: CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore TPMRouter.slnx
+
+      - name: Build
+        run: dotnet build TPMRouter.slnx --configuration Release --no-restore
+
+      - name: Run unit tests
+        run: dotnet test tests/TPMRouter.UnitTests/TPMRouter.UnitTests.csproj --configuration Release --no-build --no-restore
