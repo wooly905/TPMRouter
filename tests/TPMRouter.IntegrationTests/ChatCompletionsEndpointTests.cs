@@ -349,16 +349,19 @@ public sealed class ChatCompletionsEndpointTests : IDisposable
     }
 
     [Fact]
-    public async Task InputSizeLimit_IncludesToolDefinitions()
+    public async Task LargeToolDefinitions_WithEnoughTokenBudget_AreForwarded()
     {
-        await using RelayAppFactory app = new(_upstream, [new("dep-a")], s => s["Relay:MaxInputCharacters"] = "100");
+        _upstream.RespondOk("dep-a");
+        await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
         using HttpClient client = CreateClient(app);
-        string body = RequestBody[..^1] + ",\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"" + new string('a', 100) + "\"}}]}";
+        string body = RequestBody[..^1] + ",\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"description\":\"" + new string('a', 110_000) + "\"}}]}";
 
         using HttpResponseMessage response = await PostAsync(client, body);
 
-        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
-        Assert.Empty(_upstream.LogEntries);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Single(_upstream.LogEntries);
+        JsonObject forwarded = (JsonObject)JsonNode.Parse(_upstream.LogEntries.Single().RequestMessage!.Body!)!;
+        Assert.Equal(new string('a', 110_000), forwarded["tools"]![0]!["function"]!["description"]!.GetValue<string>());
     }
 
     [Fact]

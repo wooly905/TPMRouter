@@ -6,8 +6,6 @@ public sealed class RelayOptions
 
     public double SafetyFactor { get; set; } = 0.9;
 
-    public int MaxInputCharacters { get; set; } = 100_000;
-
     public int MaxQueueWaitSeconds { get; set; } = 30;
 
     public int ErrorCooldownSeconds { get; set; } = 10;

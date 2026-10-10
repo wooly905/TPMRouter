@@ -5,41 +5,69 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>TPMRouter · TPM / RPM 狀態</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" sizes="any">
+    <script>
+        try {
+            document.documentElement.dataset.theme = localStorage.getItem('tpmrouter-theme') === 'dark' ? 'dark' : 'light';
+        } catch {
+            document.documentElement.dataset.theme = 'light';
+        }
+    </script>
     <style>
-        :root { color-scheme: light; font-family: system-ui, sans-serif; color: #172b3a; background: #f4f7fa; }
+        :root {
+            color-scheme: light;
+            --text: #172b3a; --muted: #596d7d; --background: #f4f7fa; --surface: #fff;
+            --border: #dce4eb; --divider: #e6edf2; --accent: #165bc4; --focus: #98bcf3;
+            --tpm-track: #e6edf6; --rpm-track: #e1f1ee; --rpm-fill: #16826b;
+            --ready-bg: #e8f7ef; --ready-text: #166840;
+            --limited-bg: #fff3db; --limited-text: #8b5800;
+            --cooldown-bg: #fdeceb; --error: #b42318;
+            font-family: system-ui, sans-serif; color: var(--text); background: var(--background);
+        }
+        :root[data-theme="dark"] {
+            color-scheme: dark;
+            --text: #e5edf5; --muted: #a8b8c8; --background: #101820; --surface: #192632;
+            --border: #344654; --divider: #2d3f4e; --accent: #75adff; --focus: #a8cbff;
+            --tpm-track: #293f58; --rpm-track: #21483f; --rpm-fill: #58ceb1;
+            --ready-bg: #203f32; --ready-text: #8ce0b1;
+            --limited-bg: #46371d; --limited-text: #ffd17b;
+            --cooldown-bg: #472a2c; --error: #ffaaa1;
+        }
         * { box-sizing: border-box; }
         body { margin: 0; }
         main { max-width: 1600px; margin: auto; padding: 16px 20px; }
         .page-heading, .page-status { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; }
         h1 { margin: 0; font-size: 22px; letter-spacing: -.5px; }
-        p { color: #596d7d; line-height: 1.4; margin: 6px 0; font-size: 12px; }
+        p { color: var(--muted); line-height: 1.4; margin: 6px 0; font-size: 12px; }
+        .page-actions { display: flex; align-items: center; gap: 8px; }
+        .theme-label { font-size: 12px; color: var(--muted); }
+        select { font: inherit; font-size: 12px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; }
         button { font: inherit; font-size: 12px; padding: 6px 12px; border-radius: 6px; border: 0; background: #165bc4; color: white; cursor: pointer; }
         button:disabled { opacity: .6; cursor: wait; }
-        button:focus-visible { outline: 3px solid #98bcf3; outline-offset: 2px; }
+        button:focus-visible, select:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
         #message { margin: 6px 0 10px; }
-        #message.error { color: #b42318; }
-        .endpoint { background: white; border: 1px solid #dce4eb; border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
-        h2 { font-size: 14px; margin: 0; padding: 8px 10px; border-bottom: 1px solid #e6edf2; }
+        #message.error { color: var(--error); }
+        .endpoint { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
+        h2 { font-size: 14px; margin: 0; padding: 8px 10px; border-bottom: 1px solid var(--divider); }
         .models { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px; padding: 10px; }
-        .model-card { border: 1px solid #e6edf2; border-radius: 6px; padding: 10px; min-width: 0; }
+        .model-card { border: 1px solid var(--divider); border-radius: 6px; padding: 10px; min-width: 0; }
         .model-heading { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
         h3 { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
-        .deployment, .detail { display: block; color: #596d7d; font-size: 11px; margin-top: 2px; }
+        .deployment, .detail { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
         .deployment { overflow-wrap: anywhere; }
         .charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 10px; }
         .usage { min-width: 0; font-variant-numeric: tabular-nums; }
         .usage-label { display: flex; justify-content: space-between; gap: 4px; font-size: 11px; margin-bottom: 3px; }
         .usage-values { margin: 0 0 4px; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
-        .bar { height: 12px; border-radius: 3px; background: #e6edf6; overflow: hidden; }
-        .bar-fill { height: 100%; background: #165bc4; }
-        .rpm .bar { background: #e1f1ee; }
-        .rpm .bar-fill { background: #16826b; }
+        .bar { height: 12px; border-radius: 3px; background: var(--tpm-track); overflow: hidden; }
+        .bar-fill { height: 100%; background: var(--accent); }
+        .rpm .bar { background: var(--rpm-track); }
+        .rpm .bar-fill { background: var(--rpm-fill); }
         .usage .detail { margin-top: 4px; }
         .legend { font-size: 11px; margin: 6px 0 10px; }
         .badge { display: inline-block; padding: 2px 7px; border-radius: 20px; font-size: 11px; font-weight: 600; }
-        .ready { background: #e8f7ef; color: #166840; }
-        .limited { background: #fff3db; color: #8b5800; }
-        .cooldown { background: #fdeceb; color: #b42318; }
+        .ready { background: var(--ready-bg); color: var(--ready-text); }
+        .limited { background: var(--limited-bg); color: var(--limited-text); }
+        .cooldown { background: var(--cooldown-bg); color: var(--error); }
         @media (max-width: 600px) { main { padding: 12px 10px; } .models { grid-template-columns: 1fr; padding: 8px; } }
     </style>
 </head>
@@ -47,7 +75,14 @@
     <main>
         <div class="page-heading">
             <h1>TPMRouter 狀態</h1>
-            <button id="refresh" type="button">更新狀態</button>
+            <div class="page-actions">
+                <label for="theme" class="theme-label">主題</label>
+                <select id="theme">
+                    <option value="light">Light 淺色</option>
+                    <option value="dark">Dark 深色</option>
+                </select>
+                <button id="refresh" type="button">更新狀態</button>
+            </div>
         </div>
         <p>所有 endpoint 的 model 預算，每 10 秒自動更新。TPM 為 token 額度，RPM 為 request 額度。</p>
         <div class="page-status">
@@ -58,6 +93,17 @@
         <p>預算採最近 60 秒的 rolling window；預留 token 並非實際用量。可用額度已套用 SafetyFactor 與 upstream rate-limit headers；RPM 設為 0 表示未設定本地限制。</p>
     </main>
     <script>
+        const themeSelect = document.getElementById('theme');
+        themeSelect.value = document.documentElement.dataset.theme;
+        themeSelect.addEventListener('change', () => {
+            document.documentElement.dataset.theme = themeSelect.value;
+            try {
+                localStorage.setItem('tpmrouter-theme', themeSelect.value);
+            } catch {
+                // Theme switching still works when browser storage is unavailable.
+            }
+        });
+
         const refreshButton = document.getElementById('refresh');
         const message = document.getElementById('message');
         const endpoints = document.getElementById('endpoints');

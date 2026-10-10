@@ -28,16 +28,21 @@ public class RelayServiceTests
         Assert.Equal(StatusCodes.Status400BadRequest, outcome?.StatusCode);
     }
 
-    [Fact]
-    public async Task RelayChatAsync_TooManyCharacters_Returns413()
+    [Theory]
+    [InlineData('a', 110_000)]
+    [InlineData('你', 17_000)]
+    public async Task RelayChatAsync_LargeJsonWithEnoughTokenBudget_Returns200(char character, int length)
     {
-        var options = TestData.Options(0.9, TestData.Deployment("a", 1000, 0));
-        options.MaxInputCharacters = 10;
-        RelayService service = TestData.Service(options, new FakeUpstreamClient(_ => FakeUpstreamClient.Ok()));
+        var options = TestData.Options(0.9, TestData.Deployment("a", 1_000_000, 0));
+        var upstream = new FakeUpstreamClient(_ => FakeUpstreamClient.Ok());
+        RelayService service = TestData.Service(options, upstream);
+        string text = new(character, length);
+        Assert.True(new JsonObject { ["input"] = text }.ToJsonString().Length > 100_000);
 
-        RelayOutcome outcome = await RelayAsync(service, "123456", "12345");
+        RelayOutcome outcome = await RelayAsync(service, text);
 
-        Assert.Equal(StatusCodes.Status413PayloadTooLarge, outcome.StatusCode);
+        Assert.Equal(StatusCodes.Status200OK, outcome.StatusCode);
+        Assert.Equal(["test/a"], upstream.Calls);
     }
 
     [Fact]

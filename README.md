@@ -10,7 +10,7 @@ The animation uses illustrative effective token budgets. Each request reserves e
 
 ## How it works
 
-1. The router validates the client API key and input size.
+1. The router validates the client API key and request format.
 2. It estimates tokens for each eligible deployment using the `o200k_base` tokenizer. Responses includes full `input` history, instructions, tool definitions, and structured output schemas, plus the requested output limit (or the deployment's `MaxOutputTokens` when omitted). Chat Completions includes all messages and schemas, plus `n` times its output limit.
 3. It selects a deployment from those that are not in cooldown and have enough TPM and RPM left in the last 60 seconds:
    - lowest `Priority` value first, compared globally across endpoints (values may repeat),
@@ -51,7 +51,6 @@ Settings live under the `Relay` section of `src/TPMRouter.Api/appsettings.json`.
 | `ClientApiKey` | Client key for Responses and Chat Completions (Bearer). **Secret.** |
 | `AdminApiKey` | Key required for `GET /relay/status`. **Secret.** |
 | `SafetyFactor` | Fraction of TPM/RPM the relay may use (default `0.9`). |
-| `MaxInputCharacters` | Max characters in the request JSON after serialization, including options and schemas (default `100000`). |
 | `MaxQueueWaitSeconds` | Queue-wait cutoff measured from the start of routing, also constrained by the request deadline (default `30`). |
 | `ErrorCooldownSeconds` | Cooldown for retryable upstream errors and timeouts before the response starts; fallback for `429` without a retry header (default `10`). |
 | `UpstreamTimeoutSeconds` | Timeout for one upstream attempt, including reading its stream (default `120`). |
@@ -69,7 +68,6 @@ For example, two endpoints can each host multiple models. The same public model 
 {
   "Relay": {
     "SafetyFactor": 0.9,
-    "MaxInputCharacters": 100000,
     "MaxQueueWaitSeconds": 30,
     "ErrorCooldownSeconds": 10,
     "UpstreamTimeoutSeconds": 120,
@@ -244,7 +242,9 @@ ChatCompletion completion = await client.CompleteChatAsync([new UserChatMessage(
 Console.WriteLine(completion.Content[0].Text);
 ```
 
-Errors before the response starts use `{ "error": { "message": "...", "type": "...", "param": null, "code": "..." } }`; `param` identifies the invalid field when available. Invalid JSON, content type, or parameters return `400`, invalid Bearer keys return `401`, unknown models return `404`, input/budget estimates that cannot fit return `413`, full eligible deployments return `429` with `Retry-After`, and upstream failures or timeouts return `502` or `504`. Non-retryable upstream errors retain their status and error details.
+The router does not impose a JSON character-count limit. It estimates input and output tokens, then selects a deployment with enough remaining TPM and RPM according to global priority. If none has capacity now, it waits within `MaxQueueWaitSeconds` or returns `429` with `Retry-After`. If the estimate exceeds every eligible deployment's total usable TPM (`TokensPerMinute × SafetyFactor`), it returns `413` because no deployment can fit the request even with an empty rolling window.
+
+Errors before the response starts use `{ "error": { "message": "...", "type": "...", "param": null, "code": "..." } }`; `param` identifies the invalid field when available. Invalid JSON, content type, or parameters return `400`, invalid Bearer keys return `401`, unknown models return `404`, token estimates that cannot fit return `413`, full eligible deployments return `429` with `Retry-After`, and upstream failures or timeouts return `502` or `504`. Non-retryable upstream errors retain their status and error details.
 
 ### `GET /relay/status`
 

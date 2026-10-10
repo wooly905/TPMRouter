@@ -63,11 +63,6 @@ public sealed class RelayService(IOptions<RelayOptions> options,
                                                          Func<bool> hasStarted,
                                                          CancellationToken requestAborted)
     {
-        if (requestBody.ToJsonString().Length > _options.MaxInputCharacters)
-        {
-            return new RelayOutcome(413, Error: "The input is too long.");
-        }
-
         List<DeploymentTarget> candidates = _deployments.Values
             .Where(d => model == "auto" || d.Deployment.Model == model).ToList();
         if (candidates.Count == 0)

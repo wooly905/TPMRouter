@@ -28,11 +28,6 @@ public sealed class RelayOptionsValidator : IValidateOptions<RelayOptions>
             failures.Add("Relay:SafetyFactor must be > 0 and <= 1.");
         }
 
-        if (options.MaxInputCharacters <= 0)
-        {
-            failures.Add("Relay:MaxInputCharacters must be > 0.");
-        }
-
         if (options.MaxQueueWaitSeconds < 0)
         {
             failures.Add("Relay:MaxQueueWaitSeconds must be >= 0.");

@@ -171,6 +171,39 @@ public sealed class ResponsesEndpointTests : IDisposable
     }
 
     [Fact]
+    public async Task LargeInput_UsesRemainingTpmToRouteAcrossEndpoints()
+    {
+        using WireMockServer other = WireMockServer.Start();
+        Respond(other, "first", ResponseBody);
+        Respond(_upstream, "second", ResponseBody);
+        await using RelayAppFactory app = new([
+            new("endpoint-1", _upstream, [new("second", TokensPerMinute: 100_000, Priority: 10)]),
+            new("endpoint-2", other, [new("first", TokensPerMinute: 40_000, Priority: 9)])],
+            settings => settings["Relay:MaxQueueWaitSeconds"] = "0");
+        using HttpClient client = app.CreateChatClient();
+        JsonObject body = new()
+        {
+            ["model"] = "auto",
+            ["input"] = string.Concat(Enumerable.Repeat("test ", 25_000)),
+            ["max_output_tokens"] = 50,
+        };
+        string json = body.ToJsonString();
+        Assert.True(json.Length > 100_000);
+
+        using HttpResponseMessage first = await PostAsync(client, json);
+        using HttpResponseMessage second = await PostAsync(client, json);
+
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+        Assert.Single(other.LogEntries);
+        Assert.Single(_upstream.LogEntries);
+        Assert.True(other.LogEntries.Single().IsFor("first"));
+        Assert.True(_upstream.LogEntries.Single().IsFor("second"));
+        JsonObject forwarded = (JsonObject)JsonNode.Parse(_upstream.LogEntries.Single().RequestMessage!.Body!)!;
+        Assert.Equal(body["input"]!.GetValue<string>(), forwarded["input"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task MissingOutputLimit_UsesDeploymentCapAndUpdatesSharedBudget()
     {
         Respond(_upstream, "dep-a", ResponseBody);

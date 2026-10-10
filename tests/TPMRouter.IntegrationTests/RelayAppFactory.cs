@@ -33,7 +33,6 @@ public sealed class RelayAppFactory(IReadOnlyList<TestEndpoint> endpoints, Actio
         Dictionary<string, string?> settings = new()
         {
             ["Relay:SafetyFactor"] = "1.0",
-            ["Relay:MaxInputCharacters"] = "100000",
             ["Relay:MaxQueueWaitSeconds"] = "5",
             ["Relay:ErrorCooldownSeconds"] = "10",
             ["Relay:UpstreamTimeoutSeconds"] = "10",
