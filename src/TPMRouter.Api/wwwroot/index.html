@@ -156,6 +156,7 @@
                 const section = element('section', undefined, 'endpoint');
                 section.append(element('h2', endpointId));
                 const models = element('div', undefined, 'models');
+                deployments.sort((a, b) => a.priority - b.priority);
                 for (const status of deployments) {
                     const card = element('article', undefined, 'model-card');
                     const heading = element('div', undefined, 'model-heading');
