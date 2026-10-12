@@ -4,11 +4,16 @@ using Microsoft.Extensions.Options;
 using TPMRouter.Api.Budget;
 using TPMRouter.Api.Options;
 using TPMRouter.Api.Upstream;
+using TPMRouter.Api.Usage;
 
 namespace TPMRouter.Api.Relay;
 
-public sealed record RelayOutcome(int StatusCode, string? Error = null, TimeSpan? RetryAfter = null,
-                                  BinaryData? Content = null, string? ErrorParam = null, string? ErrorCode = null)
+public sealed record RelayOutcome(int StatusCode,
+                                  string? Error = null,
+                                  TimeSpan? RetryAfter = null,
+                                  BinaryData? Content = null,
+                                  string? ErrorParam = null,
+                                  string? ErrorCode = null)
 {
     public const int ClientClosedRequest = 499;
 }
@@ -28,7 +33,8 @@ public sealed class RelayService(IOptions<RelayOptions> options,
     public Task<RelayOutcome> RelayChatAsync(ChatCompletionsRequest request,
                                              Func<PipelineResponse, CancellationToken, Task> onStream,
                                              Func<bool> hasStarted,
-                                             CancellationToken requestAborted) =>
+                                             CancellationToken requestAborted,
+                                             UsageRecordBuilder? streamedUsage = null) =>
         RelayInferenceAsync(request.Body,
                             request.Model,
                             request.MaxOutputTokens,
@@ -37,12 +43,14 @@ public sealed class RelayService(IOptions<RelayOptions> options,
                             upstream.CompleteChatAsync,
                             onStream,
                             hasStarted,
-                            requestAborted);
+                            requestAborted,
+                            streamedUsage);
 
     public Task<RelayOutcome> RelayResponseAsync(ResponsesRequest request,
                                                  Func<PipelineResponse, CancellationToken, Task> onStream,
                                                  Func<bool> hasStarted,
-                                                 CancellationToken requestAborted) =>
+                                                 CancellationToken requestAborted,
+                                                 UsageRecordBuilder? streamedUsage = null) =>
         RelayInferenceAsync(request.Body,
                             request.Model,
                             request.MaxOutputTokens,
@@ -51,7 +59,8 @@ public sealed class RelayService(IOptions<RelayOptions> options,
                             upstream.CreateResponseAsync,
                             onStream,
                             hasStarted,
-                            requestAborted);
+                            requestAborted,
+                            streamedUsage);
 
     private async Task<RelayOutcome> RelayInferenceAsync(JsonObject requestBody,
                                                          string model,
@@ -61,7 +70,8 @@ public sealed class RelayService(IOptions<RelayOptions> options,
                                                          Func<string, JsonObject, Func<PipelineResponse, CancellationToken, Task>, CancellationToken, Task<UpstreamResult>> complete,
                                                          Func<PipelineResponse, CancellationToken, Task> onStream,
                                                          Func<bool> hasStarted,
-                                                         CancellationToken requestAborted)
+                                                         CancellationToken requestAborted,
+                                                         UsageRecordBuilder? streamedUsage)
     {
         List<DeploymentTarget> candidates = _deployments.Values
             .Where(d => model == "auto" || d.Deployment.Model == model).ToList();
@@ -96,6 +106,7 @@ public sealed class RelayService(IOptions<RelayOptions> options,
 
         return await RelayCoreAsync(estimates, async (selected, token) =>
         {
+            streamedUsage?.ResetUsage();
             JsonObject body = (JsonObject)requestBody.DeepClone();
             body["model"] = selected.Deployment.Name;
 
@@ -110,12 +121,48 @@ public sealed class RelayService(IOptions<RelayOptions> options,
                 body[tokenField] = selected.Deployment.MaxOutputTokens;
             }
 
-            return await complete(selected.Key, body, async (response, streamToken) =>
+            DeploymentStatus status = (await tracker.GetStatusAsync())
+                .Single(s => s.EndpointId == selected.EndpointId && s.Name == selected.Deployment.Name);
+            logger.LogInformation("Token budget diagnostic: model {Model}, endpoint {EndpointId}, deployment {Deployment}, estimated input {EstimatedInputTokens}, output limit {OutputTokenLimit}, choices {Choices}, attempt reservation {ReservedTokens}, window reserved {WindowReservedTokens}, window requests {WindowRequests}, available {AvailableTokens}, effective TPM {EffectiveTokensPerMinute}.",
+                                  model,
+                                  selected.EndpointId,
+                                  selected.Deployment.Name,
+                                  promptTokens,
+                                  maxOutputTokens ?? selected.Deployment.MaxOutputTokens,
+                                  choices,
+                                  estimates[selected.Key],
+                                  status.ReservedTokens,
+                                  status.RequestsInWindow,
+                                  status.AvailableTokens,
+                                  (long)Math.Floor(status.TokensPerMinute * _options.SafetyFactor));
+
+            try
             {
-                RateLimitHeaders headers = AzureOpenAIUpstreamClient.ReadRateLimits(response.Headers);
-                await tracker.RecordHeadersAsync(selected.Key, headers.RemainingTokens, headers.RemainingRequests, timeProvider.GetUtcNow());
-                await onStream(response, streamToken);
-            }, token);
+                UpstreamResult result = await complete(selected.Key, body, async (response, streamToken) =>
+                {
+                    RateLimitHeaders headers = AzureOpenAIUpstreamClient.ReadRateLimits(response.Headers);
+                    await tracker.RecordHeadersAsync(selected.Key, headers.RemainingTokens, headers.RemainingRequests, timeProvider.GetUtcNow());
+                    await onStream(response, streamToken);
+                }, token);
+                if (!result.Streamed && result.Content is { } content)
+                {
+                    UsageRecordBuilder usage = new("");
+                    usage.ReadResponse(content.ToString(), false);
+                    if (usage.TotalTokens is { } actualTokens)
+                    {
+                        await tracker.RecordUsageAsync(selected.Key, actualTokens);
+                    }
+                }
+
+                return result;
+            }
+            finally
+            {
+                if (streamedUsage?.TotalTokens is { } actualTokens)
+                {
+                    await tracker.RecordUsageAsync(selected.Key, actualTokens);
+                }
+            }
         }, hasStarted, requestAborted);
     }
 
@@ -225,6 +272,12 @@ public sealed class RelayService(IOptions<RelayOptions> options,
             {
                 await tracker.RecordHeadersAsync(deploymentName, result.RateLimits.RemainingTokens, result.RateLimits.RemainingRequests, timeProvider.GetUtcNow());
             }
+
+            logger.LogInformation("Token budget diagnostic upstream: deployment {Deployment}, status {UpstreamStatus}, remaining tokens {HeaderRemainingTokens}, remaining requests {HeaderRemainingRequests}.",
+                                  deploymentName,
+                                  result.Status,
+                                  result.RateLimits.RemainingTokens,
+                                  result.RateLimits.RemainingRequests);
 
             if (result.Status is >= 200 and < 300)
             {

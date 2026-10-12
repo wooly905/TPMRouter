@@ -187,6 +187,21 @@ public sealed class RedisTokenBudgetTrackerTests(RedisFixture redis)
     }
 
     [Fact]
+    public async Task ReportedUsage_AccumulatesAndExpiresAfter60Seconds()
+    {
+        var tracker = Tracker(1.0, Deployment("a", 1000, 0));
+        await tracker.RecordUsageAsync("test/a", 15);
+        _time.Advance(TimeSpan.FromSeconds(30));
+        await tracker.RecordUsageAsync("test/a", 20);
+
+        Assert.Equal(35, (await tracker.GetStatusAsync())[0].ActualTokens);
+        _time.Advance(TimeSpan.FromSeconds(30));
+        Assert.Equal(20, (await tracker.GetStatusAsync())[0].ActualTokens);
+        _time.Advance(TimeSpan.FromSeconds(30));
+        Assert.Equal(0, (await tracker.GetStatusAsync())[0].ActualTokens);
+    }
+
+    [Fact]
     public async Task ParallelReservations_DoNotExceedTpm()
     {
         var tracker = Tracker(0.9, Deployment("a", 10_000, 0), Deployment("b", 5_000, 0));

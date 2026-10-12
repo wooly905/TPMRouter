@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Text;
 using WireMock.Server;
 
@@ -11,6 +12,34 @@ public sealed class RedisTwoInstanceTests(RedisFixture redis) : IDisposable
     private readonly WireMockServer _upstream = WireMockServer.Start();
 
     public void Dispose() => _upstream.Stop();
+
+    [Fact]
+    public async Task TwoInstances_ShareFailedAttemptReservations()
+    {
+        _upstream.Given(Upstream.ChatRequest("shared"))
+            .RespondWith(WireMock.ResponseBuilders.Response.Create().WithStatusCode(400)
+                .WithHeader("Content-Type", "application/json")
+                .WithBody("""{"error":{"message":"unsupported"},"usage":{"prompt_tokens":50,"completion_tokens":5}}"""));
+        string prefix = $"failed-two-{Guid.NewGuid():N}";
+        void Configure(Dictionary<string, string?> settings)
+        {
+            settings["Relay:BudgetStore"] = "Redis";
+            settings["Relay:RedisConnectionString"] = redis.ConnectionString;
+            settings["Relay:RedisKeyPrefix"] = prefix;
+        }
+
+        await using RelayAppFactory first = new(_upstream, [new("shared")], Configure);
+        await using RelayAppFactory second = new(_upstream, [new("shared")], Configure);
+        using HttpClient firstClient = first.CreateChatClient();
+        using HttpClient secondClient = second.CreateChatClient();
+        using HttpResponseMessage response = await firstClient.PostChatAsync("Hi");
+        var status = await secondClient.GetFromJsonAsync<System.Text.Json.JsonElement>("/relay/dashboard/status");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.True(status[0].GetProperty("reservedTokens").GetInt64() > 100);
+        Assert.Equal(1, status[0].GetProperty("requestsInWindow").GetInt32());
+        Assert.Equal(55, status[0].GetProperty("actualTokens").GetInt64());
+    }
 
     [Fact]
     public async Task TwoInstances_ShareIndependentBudgetsAcrossEndpoints()

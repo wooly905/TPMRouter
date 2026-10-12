@@ -46,6 +46,27 @@ public class InMemoryTokenBudgetTrackerTests
     }
 
     [Fact]
+    public void ReportedUsage_IsIsolatedAndExpiresFromReportTime()
+    {
+        RelayOptions options = TestData.Options(1.0, TestData.Deployment("shared", 1000, 0));
+        options.Endpoints.Add(TestData.Endpoint("other", TestData.Deployment("shared", 1000, 0)));
+        var tracker = TestData.Tracker(options, _time);
+        tracker.TryReserve(new Dictionary<string, long> { ["test/shared"] = 1000 });
+        _time.Advance(TimeSpan.FromSeconds(30));
+        tracker.RecordUsage("test/shared", 15);
+        tracker.RecordUsage("other/shared", 7);
+
+        Assert.Equal(15, tracker.GetStatus().Single(status => status.EndpointId == "test").ActualTokens);
+        Assert.Equal(7, tracker.GetStatus().Single(status => status.EndpointId == "other").ActualTokens);
+        Assert.Equal(1000, tracker.GetStatus().Single(status => status.EndpointId == "test").ReservedTokens);
+        _time.Advance(TimeSpan.FromSeconds(30));
+        Assert.Equal(0, tracker.GetStatus().Single(status => status.EndpointId == "test").ReservedTokens);
+        Assert.Equal(15, tracker.GetStatus().Single(status => status.EndpointId == "test").ActualTokens);
+        _time.Advance(TimeSpan.FromSeconds(30));
+        Assert.All(tracker.GetStatus(), status => Assert.Equal(0, status.ActualTokens));
+    }
+
+    [Fact]
     public void DeploymentKeys_WithSeparators_DoNotCollide()
     {
         DeploymentTarget first = TestData.Target(TestData.Deployment("c", 1000, 0), "a/b");

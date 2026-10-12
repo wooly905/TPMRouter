@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using TPMRouter.Api.Relay;
+using TPMRouter.Api.Usage;
 
 namespace TPMRouter.Api.Endpoints;
 
@@ -31,10 +32,12 @@ public static class ChatCompletionsEndpoint
             return OpenAIError.Result(invalid);
         }
 
+        UsageRecordBuilder streamedUsage = new("");
         RelayOutcome outcome = await service.RelayChatAsync(request!,
-                                                            (response, token) => CopyStreamAsync(response, context, token),
+                                                            (response, token) => CopyStreamAsync(response, context, streamedUsage, token),
                                                             () => context.Response.HasStarted,
-                                                            context.RequestAborted);
+                                                            context.RequestAborted,
+                                                            streamedUsage);
         if (context.Response.HasStarted)
         {
             if (outcome.StatusCode != StatusCodes.Status200OK)
@@ -56,20 +59,35 @@ public static class ChatCompletionsEndpoint
             : OpenAIError.Result(outcome);
     }
 
-    private static async Task CopyStreamAsync(PipelineResponse response, HttpContext context, CancellationToken token)
+    private static async Task CopyStreamAsync(PipelineResponse response, HttpContext context,
+                                               UsageRecordBuilder usage, CancellationToken token)
     {
         using StreamReader reader = new(response.ContentStream!, Encoding.UTF8);
         context.Response.ContentType = "text/event-stream";
         context.Response.Headers.CacheControl = "no-cache";
         bool done = false;
+        StringBuilder data = new();
         while (await reader.ReadLineAsync(token) is { } line)
         {
-            await context.Response.WriteAsync(line + "\n", token);
-            
-            if (line.StartsWith("data:", StringComparison.Ordinal) && line[5..].Trim() == "[DONE]")
+            if (line.StartsWith("data:", StringComparison.Ordinal))
             {
-                done = true;
+                if (line[5..].Trim() == "[DONE]")
+                {
+                    done = true;
+                }
+                else
+                {
+                    data.AppendLine(line[5..].TrimStart());
+                }
             }
+
+            if (line.Length == 0 && data.Length > 0)
+            {
+                usage.ReadResponse(data.ToString(), false);
+                data.Clear();
+            }
+
+            await context.Response.WriteAsync(line + "\n", token);
 
             if (line.Length == 0)
             {

@@ -13,6 +13,14 @@ public sealed class UsageRecordBuilder
     private long? _inputTokens;
     private long? _outputTokens;
 
+    public long? TotalTokens => _inputTokens + _outputTokens;
+
+    public void ResetUsage()
+    {
+        _inputTokens = null;
+        _outputTokens = null;
+    }
+
     public UsageRecordBuilder(string request)
     {
         JsonObject? body = ParseObject(request);

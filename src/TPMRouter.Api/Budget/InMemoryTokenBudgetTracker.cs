@@ -39,6 +39,23 @@ public sealed class InMemoryTokenBudgetTracker : ITokenBudgetTracker
 
     ValueTask<IReadOnlyList<DeploymentStatus>> ITokenBudgetTracker.GetStatusAsync() => ValueTask.FromResult(GetStatus());
 
+    ValueTask ITokenBudgetTracker.RecordUsageAsync(string deployment, long actualTokens)
+    {
+        RecordUsage(deployment, actualTokens);
+        return ValueTask.CompletedTask;
+    }
+
+    public void RecordUsage(string deployment, long actualTokens)
+    {
+        lock (_lock)
+        {
+            if (_states.TryGetValue(deployment, out DeploymentState? state))
+            {
+                state.Usages.Enqueue(new Usage(_timeProvider.GetUtcNow(), actualTokens));
+            }
+        }
+    }
+
     public ReservationResult TryReserve(IReadOnlyDictionary<string, long> estimates)
     {
         lock (_lock)
@@ -129,7 +146,8 @@ public sealed class InMemoryTokenBudgetTracker : ITokenBudgetTracker
                     budget.AvailableRequests,
                     state.TokenSnapshot?.Remaining,
                     state.RequestSnapshot?.Remaining,
-                    budget.InCooldown ? state.CooldownUntil : null));
+                    budget.InCooldown ? state.CooldownUntil : null,
+                    state.Usages.Sum(u => u.Tokens)));
             }
 
             return result;
@@ -184,6 +202,8 @@ public sealed class InMemoryTokenBudgetTracker : ITokenBudgetTracker
 
     private readonly record struct Snapshot(long Remaining, DateTimeOffset ReceivedAt);
 
+    private readonly record struct Usage(DateTimeOffset At, long Tokens);
+
     private sealed class DeploymentState(DeploymentTarget target)
     {
         public DeploymentTarget Target { get; } = target;
@@ -191,6 +211,8 @@ public sealed class InMemoryTokenBudgetTracker : ITokenBudgetTracker
         public DeploymentOptions Deployment => Target.Deployment;
 
         public Queue<Reservation> Reservations { get; } = new();
+
+        public Queue<Usage> Usages { get; } = new();
 
         public long ReservedTokens { get; private set; }
 
@@ -211,6 +233,11 @@ public sealed class InMemoryTokenBudgetTracker : ITokenBudgetTracker
             while (Reservations.Count > 0 && Reservations.Peek().At + Window <= now)
             {
                 ReservedTokens -= Reservations.Dequeue().Tokens;
+            }
+
+            while (Usages.Count > 0 && Usages.Peek().At + Window <= now)
+            {
+                Usages.Dequeue();
             }
 
             if (TokenSnapshot is { } tokens && tokens.ReceivedAt + Window <= now)

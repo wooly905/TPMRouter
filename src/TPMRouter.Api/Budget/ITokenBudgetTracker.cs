@@ -11,6 +11,8 @@ public interface ITokenBudgetTracker
 
     ValueTask SetCooldownAsync(string deployment, TimeSpan duration);
 
+    ValueTask RecordUsageAsync(string deployment, long actualTokens);
+
     ValueTask<IReadOnlyList<DeploymentStatus>> GetStatusAsync();
 }
 
@@ -35,4 +37,5 @@ public sealed record DeploymentStatus(string EndpointId,
                                       long? AvailableRequests,
                                       long? HeaderRemainingTokens,
                                       long? HeaderRemainingRequests,
-                                      DateTimeOffset? CooldownUntil);
+                                      DateTimeOffset? CooldownUntil,
+                                      long ActualTokens = 0);

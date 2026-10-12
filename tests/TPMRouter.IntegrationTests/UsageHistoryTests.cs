@@ -216,7 +216,7 @@ public sealed class UsageHistoryTests : IDisposable
         string index = await client.GetStringAsync("/index.html");
         string page = await client.GetStringAsync("/usage-history.html");
 
-        Assert.Contains("href=\"./usage-history.html\">使用量歷史</a>", index);
+        Assert.Contains("href=\"./usage-history.html\">Usage history</a>", index);
         Assert.Contains("id=\"start-date\" type=\"date\"", page);
         Assert.Contains("id=\"end-date\" type=\"date\"", page);
     }

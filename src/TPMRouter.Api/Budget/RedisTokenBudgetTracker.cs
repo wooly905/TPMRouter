@@ -80,15 +80,21 @@ public sealed class RedisTokenBudgetTracker : ITokenBudgetTracker
         return { '', nextChange - now }
         """;
 
-    // ARGV: now, window, safety, then per deployment: tpm, rpm. KEYS: res, snap, cool per deployment.
+    // ARGV: now, window, safety, then per deployment: tpm, rpm. KEYS: res, snap, cool, usage per deployment.
     private const string StatusScript = BudgetFunction + """
 
         local now, window, safety = tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[3])
         local n = (#ARGV - 3) / 2
         local result = {}
         for i = 0, n - 1 do
-          local k = i * 3
+          local k = i * 4
           local b = budget(KEYS[k + 1], KEYS[k + 2], KEYS[k + 3], now, window, safety, tonumber(ARGV[4 + i * 2]), tonumber(ARGV[5 + i * 2]))
+          redis.call('ZREMRANGEBYSCORE', KEYS[k + 4], '-inf', now - window)
+          local usage = redis.call('ZRANGE', KEYS[k + 4], 0, -1)
+          local actual = 0
+          for j = 1, #usage do
+            actual = actual + tonumber(string.match(usage[j], ':(%d+)$'))
+          end
           local function s(v) if v == nil then return '' end return tostring(v) end
           table.insert(result, s(b.reserved))
           table.insert(result, s(b.count))
@@ -97,8 +103,16 @@ public sealed class RedisTokenBudgetTracker : ITokenBudgetTracker
           table.insert(result, s(b.tr))
           table.insert(result, s(b.rr))
           table.insert(result, s(b.cool))
+          table.insert(result, s(actual))
         end
         return result
+        """;
+
+    // ARGV: report time, unique member with actual tokens, window. KEYS: usage.
+    private const string RecordUsageScript = """
+        redis.call('ZADD', KEYS[1], ARGV[1], ARGV[2])
+        redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[3]) * 2)
+        return 1
         """;
 
     // ARGV: receivedAt, remainingTokens or '', remainingRequests or '', window. KEYS: snap.
@@ -183,6 +197,12 @@ public sealed class RedisTokenBudgetTracker : ITokenBudgetTracker
         await _database.ScriptEvaluateAsync(CooldownScript, [CooldownKey(deployment)], [Now() + durationMs, durationMs]);
     }
 
+    public async ValueTask RecordUsageAsync(string deployment, long actualTokens)
+    {
+        string member = $"{Guid.NewGuid():N}:{actualTokens.ToString(CultureInfo.InvariantCulture)}";
+        await _database.ScriptEvaluateAsync(RecordUsageScript, [UsageKey(deployment)], [Now(), member, WindowMs]);
+    }
+
     public async ValueTask<IReadOnlyList<DeploymentStatus>> GetStatusAsync()
     {
         long now = Now();
@@ -193,6 +213,7 @@ public sealed class RedisTokenBudgetTracker : ITokenBudgetTracker
         {
             DeploymentOptions deployment = target.Deployment;
             AddKeys(keys, target.Key);
+            keys.Add(UsageKey(target.Key));
             args.AddRange([deployment.TokensPerMinute!.Value, deployment.RequestsPerMinute!.Value]);
         }
 
@@ -202,7 +223,7 @@ public sealed class RedisTokenBudgetTracker : ITokenBudgetTracker
         {
             DeploymentTarget target = targets[i];
             DeploymentOptions deployment = target.Deployment;
-            int o = i * 7;
+            int o = i * 8;
             long cooldown = ParseLong(result[o + 6]) ?? 0;
             statuses.Add(new DeploymentStatus(
                 target.EndpointId,
@@ -217,7 +238,8 @@ public sealed class RedisTokenBudgetTracker : ITokenBudgetTracker
                 ParseLong(result[o + 3]),
                 ParseLong(result[o + 4]),
                 ParseLong(result[o + 5]),
-                cooldown > now ? DateTimeOffset.FromUnixTimeMilliseconds(cooldown) : null));
+                cooldown > now ? DateTimeOffset.FromUnixTimeMilliseconds(cooldown) : null,
+                ParseLong(result[o + 7]) ?? 0));
         }
 
         return statuses;
@@ -238,6 +260,8 @@ public sealed class RedisTokenBudgetTracker : ITokenBudgetTracker
     private string SnapshotKey(string deployment) => $"{{{_options.RedisKeyPrefix}}}:v2:{deployment}:snap";
 
     private string CooldownKey(string deployment) => $"{{{_options.RedisKeyPrefix}}}:v2:{deployment}:cool";
+
+    private string UsageKey(string deployment) => $"{{{_options.RedisKeyPrefix}}}:v2:{deployment}:reported-usage";
 
     private static long? ParseLong(RedisResult value)
     {

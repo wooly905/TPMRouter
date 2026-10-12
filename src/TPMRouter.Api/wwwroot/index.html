@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-Hant">
+<html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>TPMRouter · TPM / RPM 狀態</title>
+    <title>TPMRouter · TPM / RPM Status</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" sizes="any">
     <script>
         try {
@@ -18,6 +18,7 @@
             --text: #172b3a; --muted: #596d7d; --background: #f4f7fa; --surface: #fff;
             --border: #dce4eb; --divider: #e6edf2; --accent: #165bc4; --focus: #98bcf3;
             --tpm-track: #e6edf6; --rpm-track: #e1f1ee; --rpm-fill: #16826b;
+            --reserved-track: #eee8f7; --reserved-fill: #7652a6;
             --ready-bg: #e8f7ef; --ready-text: #166840;
             --limited-bg: #fff3db; --limited-text: #8b5800;
             --cooldown-bg: #fdeceb; --error: #b42318;
@@ -28,6 +29,7 @@
             --text: #e5edf5; --muted: #a8b8c8; --background: #101820; --surface: #192632;
             --border: #344654; --divider: #2d3f4e; --accent: #75adff; --focus: #a8cbff;
             --tpm-track: #293f58; --rpm-track: #21483f; --rpm-fill: #58ceb1;
+            --reserved-track: #3b2e4c; --reserved-fill: #ba95ef;
             --ready-bg: #203f32; --ready-text: #8ce0b1;
             --limited-bg: #46371d; --limited-text: #ffd17b;
             --cooldown-bg: #472a2c; --error: #ffaaa1;
@@ -64,36 +66,46 @@
         .bar-fill { height: 100%; background: var(--accent); }
         .rpm .bar { background: var(--rpm-track); }
         .rpm .bar-fill { background: var(--rpm-fill); }
+        .reserved .bar { background: var(--reserved-track); }
+        .reserved .bar-fill { background: var(--reserved-fill); }
+        .rpm { grid-column: 1 / -1; }
         .usage .detail { margin-top: 4px; }
         .legend { font-size: 11px; margin: 6px 0 10px; }
         .badge { display: inline-block; padding: 2px 7px; border-radius: 20px; font-size: 11px; font-weight: 600; }
         .ready { background: var(--ready-bg); color: var(--ready-text); }
         .limited { background: var(--limited-bg); color: var(--limited-text); }
         .cooldown { background: var(--cooldown-bg); color: var(--error); }
+        footer { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 10px; font-size: 12px; color: var(--muted); }
+        footer a { color: var(--accent); }
+        footer a:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
         @media (max-width: 600px) { main { padding: 12px 10px; } .models { grid-template-columns: 1fr; padding: 8px; } }
     </style>
 </head>
 <body>
     <main>
         <div class="page-heading">
-            <h1>TPMRouter 狀態</h1>
+            <h1>TPMRouter Status</h1>
             <div class="page-actions">
-                <label for="theme" class="theme-label">主題</label>
+                <label for="theme" class="theme-label">Theme</label>
                 <select id="theme">
-                    <option value="light">Light 淺色</option>
-                    <option value="dark">Dark 深色</option>
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
                 </select>
-                <button id="refresh" type="button">更新狀態</button>
-                <a class="button-link" href="./usage-history.html">使用量歷史</a>
+                <button id="refresh" type="button">Refresh status</button>
+                <a class="button-link" href="./usage-history.html">Usage history</a>
             </div>
         </div>
-        <p>所有 endpoint 的 model 預算，每 10 秒自動更新。TPM 為 token 額度，RPM 為 request 額度。</p>
+        <p>Reported token usage and rate-limit reservations for every endpoint and model. Updated every 10 seconds.</p>
         <div class="page-status">
-            <p id="message" role="status" aria-live="polite">載入狀態中…</p>
-            <p class="legend">實色：已預留 token／已使用 request · 淺色柱底：設定上限（100%）</p>
+            <p id="message" role="status" aria-live="polite">Loading status…</p>
+            <p class="legend">Blue: reported tokens · Purple: reserved tokens · Green: request attempts · Tracks: configured limits (100%)</p>
         </div>
         <div id="endpoints"></div>
-        <p>預算採最近 60 秒的 rolling window；預留 token 並非實際用量。可用額度已套用 SafetyFactor 與 upstream rate-limit headers；RPM 設為 0 表示未設定本地限制。</p>
+        <p>All bars use a local 60-second rolling window per endpoint and deployment. Reported usage is input + output tokens returned by upstream, including successful and failed attempts; calls without usage add no tokens. Reservations use estimated input + the output limit and remain after errors, retries, or interrupted streams until they expire. Available routing budgets also depend on SafetyFactor and Azure rate-limit headers. Azure's internal estimates and short RPM windows may differ; Azure enforces the final limits.</p>
+        <footer>
+            Learn how Azure accounts for rate limits:
+            <a href="https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/quota?tabs=python#understanding-rate-limits" target="_blank" rel="noopener noreferrer">Azure OpenAI: Understanding rate limits</a>
+        </footer>
     </main>
     <script>
         const themeSelect = document.getElementById('theme');
@@ -110,7 +122,7 @@
         const refreshButton = document.getElementById('refresh');
         const message = document.getElementById('message');
         const endpoints = document.getElementById('endpoints');
-        const numbers = new Intl.NumberFormat('zh-TW');
+        const numbers = new Intl.NumberFormat('en-US');
         let loading = false;
         let lastUpdated = null;
 
@@ -122,7 +134,7 @@
         }
 
         function number(value) {
-            return value === null ? '無限制' : numbers.format(value);
+            return value === null ? 'Unlimited' : numbers.format(value);
         }
 
         function usageChart(label, used, limit, available, className) {
@@ -135,15 +147,15 @@
                 chart.append(heading, element('p', `${number(used)} / ${number(limit)}`, 'usage-values'));
                 const bar = element('div', undefined, 'bar');
                 bar.setAttribute('role', 'img');
-                bar.setAttribute('aria-label', `${label}：${number(used)}，上限 ${number(limit)}，${percentage.toFixed(1)}%`);
+                bar.setAttribute('aria-label', `${label}: ${number(used)}, limit ${number(limit)}, ${percentage.toFixed(1)}%`);
                 const fill = element('div', undefined, 'bar-fill');
                 fill.style.width = `${Math.min(100, Math.max(0, percentage))}%`;
                 bar.append(fill);
                 chart.append(bar);
             } else {
-                chart.append(heading, element('p', `${number(used)} / 未設定本地上限`, 'usage-values'));
+                chart.append(heading, element('p', `${number(used)} / No local limit`, 'usage-values'));
             }
-            chart.append(element('span', `目前可用：${number(available)}`, 'detail'));
+            if (available !== undefined) chart.append(element('span', `Available for routing: ${number(available)}`, 'detail'));
             return chart;
         }
 
@@ -170,21 +182,22 @@
                     const cooling = status.cooldownUntil && Date.parse(status.cooldownUntil) > Date.now();
                     const limited = status.availableTokens <= 0
                         || (status.availableRequests !== null && status.availableRequests <= 0);
-                    state.append(element('span', cooling ? 'Cooldown' : limited ? '額度已滿' : '可用',
+                    state.append(element('span', cooling ? 'Cooldown' : limited ? 'Routing limit reached' : 'Available',
                         `badge ${cooling ? 'cooldown' : limited ? 'limited' : 'ready'}`));
-                    if (cooling) state.append(element('span', `至 ${new Date(status.cooldownUntil).toLocaleTimeString('zh-TW')}`, 'detail'));
+                    if (cooling) state.append(element('span', `Until ${new Date(status.cooldownUntil).toLocaleTimeString('en-US')}`, 'detail'));
                     heading.append(model, state);
                     const charts = element('div', undefined, 'charts');
                     charts.append(
-                        usageChart('TPM 預留／上限', status.reservedTokens, status.tokensPerMinute, status.availableTokens, 'tpm'),
-                        usageChart('RPM 已用／上限', status.requestsInWindow, status.requestsPerMinute, status.availableRequests, 'rpm'));
+                        usageChart('Reported tokens / limit', status.actualTokens, status.tokensPerMinute, undefined, 'actual'),
+                        usageChart('Reserved tokens / limit', status.reservedTokens, status.tokensPerMinute, status.availableTokens, 'reserved'),
+                        usageChart('RPM attempts / limit', status.requestsInWindow, status.requestsPerMinute, status.availableRequests, 'rpm'));
                     card.append(heading, charts);
                     models.append(card);
                 }
                 section.append(models);
                 content.append(section);
             }
-            if (statuses.length === 0) content.append(element('p', '目前沒有 model 狀態。'));
+            if (statuses.length === 0) content.append(element('p', 'No model status available.'));
             endpoints.replaceChildren(content);
         }
 
@@ -193,21 +206,21 @@
             loading = true;
             refreshButton.disabled = true;
             message.className = '';
-            message.textContent = '更新中…';
+            message.textContent = 'Refreshing…';
             try {
                 const response = await fetch('./relay/dashboard/status', {
                     cache: 'no-store',
                     signal: AbortSignal.timeout(15000)
                 });
                 if (!response.ok) {
-                    throw new Error(`載入失敗（HTTP ${response.status}）。`);
+                    throw new Error(`Failed to load status (HTTP ${response.status}).`);
                 }
                 render(await response.json());
-                lastUpdated = new Date().toLocaleString('zh-TW');
-                message.textContent = `上次更新：${lastUpdated} · 每 10 秒自動更新`;
+                lastUpdated = new Date().toLocaleString('en-US');
+                message.textContent = `Last updated: ${lastUpdated} · Auto-refresh every 10 seconds`;
             } catch (error) {
                 message.className = 'error';
-                message.textContent = `${error.message}${lastUpdated ? ` 顯示舊資料，上次更新：${lastUpdated}。` : ''} 10 秒後自動重試。`;
+                message.textContent = `${error.message}${lastUpdated ? ` Showing stale data from ${lastUpdated}.` : ''} Retrying in 10 seconds.`;
             } finally {
                 loading = false;
                 refreshButton.disabled = false;
