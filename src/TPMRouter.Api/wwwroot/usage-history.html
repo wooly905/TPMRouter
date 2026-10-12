@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TPMRouter · 使用量歷史</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" sizes="any">
+    <script>
+        try {
+            document.documentElement.dataset.theme = localStorage.getItem('tpmrouter-theme') === 'dark' ? 'dark' : 'light';
+        } catch {
+            document.documentElement.dataset.theme = 'light';
+        }
+    </script>
+    <style>
+        :root {
+            color-scheme: light;
+            --text: #172b3a; --muted: #596d7d; --background: #f4f7fa; --surface: #fff;
+            --border: #dce4eb; --accent: #165bc4; --focus: #98bcf3; --error: #b42318;
+            font-family: system-ui, sans-serif; color: var(--text); background: var(--background);
+        }
+        :root[data-theme="dark"] {
+            color-scheme: dark;
+            --text: #e5edf5; --muted: #a8b8c8; --background: #101820; --surface: #192632;
+            --border: #344654; --accent: #75adff; --focus: #a8cbff; --error: #ffaaa1;
+        }
+        * { box-sizing: border-box; }
+        body { margin: 0; }
+        main { max-width: 1600px; margin: auto; padding: 16px 20px; }
+        .page-heading, .page-actions, .filters, .pagination { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; }
+        .page-heading { justify-content: space-between; }
+        h1 { margin: 0; font-size: 22px; letter-spacing: -.5px; }
+        p { color: var(--muted); font-size: 12px; line-height: 1.5; }
+        label { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+        input, select { font: inherit; font-size: 12px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); }
+        button, .button-link { font: inherit; font-size: 12px; padding: 7px 12px; border-radius: 6px; border: 0; background: #165bc4; color: white; cursor: pointer; text-decoration: none; }
+        button:disabled { opacity: .6; cursor: default; }
+        button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+        .filters { padding: 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+        #message.error { color: var(--error); }
+        .table-container { overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th, td { padding: 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+        th { white-space: nowrap; }
+        .datetime, .ip, .tokens { white-space: nowrap; font-variant-numeric: tabular-nums; }
+        .tokens { text-align: right; }
+        .text-cell { min-width: 180px; max-width: 320px; }
+        summary { cursor: pointer; white-space: pre-wrap; overflow-wrap: anywhere; }
+        pre { font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 400px; overflow: auto; margin-bottom: 0; }
+        .pagination { justify-content: center; margin-top: 14px; font-size: 12px; }
+        @media (max-width: 600px) { main { padding: 12px 10px; } .filters label { width: 100%; justify-content: space-between; } }
+    </style>
+</head>
+<body>
+    <main>
+        <div class="page-heading">
+            <h1>使用量歷史</h1>
+            <div class="page-actions">
+                <label for="theme">主題</label>
+                <select id="theme">
+                    <option value="light">Light 淺色</option>
+                    <option value="dark">Dark 深色</option>
+                </select>
+                <a class="button-link" href="./index.html">返回狀態頁</a>
+            </div>
+        </div>
+        <p>預設顯示含今天在內的最近七天。日期與時間依瀏覽器所在時區顯示，結束日期包含當天。</p>
+        <form id="filters" class="filters">
+            <label for="admin-key">Admin API key <input id="admin-key" type="password" autocomplete="off" required></label>
+            <label for="start-date">開始日期 <input id="start-date" type="date" required></label>
+            <label for="end-date">結束日期 <input id="end-date" type="date" required></label>
+            <button id="search" type="submit">查詢</button>
+            <button id="recent" type="button">最近七天</button>
+        </form>
+        <p id="message" role="status" aria-live="polite">請輸入 Admin API key 查詢使用量歷史。</p>
+        <div class="table-container">
+            <table>
+                <caption hidden>HTTP request／response 使用量紀錄</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">日期時間</th>
+                        <th scope="col">來源 IP</th>
+                        <th scope="col">來源文字</th>
+                        <th scope="col">Tools list</th>
+                        <th scope="col">Invoked tool</th>
+                        <th scope="col" class="tokens">Input tokens</th>
+                        <th scope="col" class="tokens">Output tokens</th>
+                        <th scope="col">輸出文字</th>
+                    </tr>
+                </thead>
+                <tbody id="records"><tr><td colspan="8">尚未查詢。</td></tr></tbody>
+            </table>
+        </div>
+        <div class="pagination">
+            <button id="previous" type="button" disabled>上一頁</button>
+            <span id="page-info">第 1 頁</span>
+            <button id="next" type="button" disabled>下一頁</button>
+        </div>
+        <p>Token 數採 upstream 回報的實際用量；未回報時顯示「未提供」。點選文字或工具欄位可展開完整內容。</p>
+    </main>
+    <script>
+        const themeSelect = document.getElementById('theme');
+        themeSelect.value = document.documentElement.dataset.theme;
+        themeSelect.addEventListener('change', () => {
+            document.documentElement.dataset.theme = themeSelect.value;
+            try { localStorage.setItem('tpmrouter-theme', themeSelect.value); } catch { }
+        });
+
+        const form = document.getElementById('filters');
+        const startDate = document.getElementById('start-date');
+        const endDate = document.getElementById('end-date');
+        const adminKey = document.getElementById('admin-key');
+        const search = document.getElementById('search');
+        const recent = document.getElementById('recent');
+        const previous = document.getElementById('previous');
+        const next = document.getElementById('next');
+        const message = document.getElementById('message');
+        const records = document.getElementById('records');
+        const pageInfo = document.getElementById('page-info');
+        const numbers = new Intl.NumberFormat('zh-TW');
+        let currentPage = 1;
+        let totalPages = 1;
+        let query = null;
+        let loading = false;
+
+        function dateValue(date) {
+            return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+        }
+
+        function setRecentDates() {
+            const end = new Date();
+            const start = new Date(end);
+            start.setDate(start.getDate() - 6);
+            startDate.value = dateValue(start);
+            endDate.value = dateValue(end);
+        }
+
+        function element(tag, text, className) {
+            const node = document.createElement(tag);
+            if (text !== undefined) node.textContent = text;
+            if (className) node.className = className;
+            return node;
+        }
+
+        function textCell(text, preview) {
+            const cell = element('td', undefined, 'text-cell');
+            if (!text) {
+                cell.textContent = '—';
+                return cell;
+            }
+            const details = element('details');
+            details.append(element('summary', preview || text.slice(0, 100) + (text.length > 100 ? '…' : '')),
+                element('pre', text));
+            cell.append(details);
+            return cell;
+        }
+
+        function toolsCell(tools) {
+            if (!tools.length) return textCell('');
+            const names = tools.map(tool => tool.name || tool.function?.name || tool.type || 'tool');
+            return textCell(JSON.stringify(tools, null, 2), names.join(', '));
+        }
+
+        function emptyRow(text) {
+            const row = element('tr');
+            const cell = element('td', text);
+            cell.colSpan = 8;
+            row.append(cell);
+            records.replaceChildren(row);
+        }
+
+        function render(data) {
+            const fragment = document.createDocumentFragment();
+            for (const record of data.items) {
+                const row = element('tr');
+                row.append(element('td', new Date(record.dateTime).toLocaleString('zh-TW', { hour12: false }), 'datetime'),
+                    element('td', record.sourceIp || '未提供', 'ip'),
+                    textCell(record.sourceText), toolsCell(record.toolsList), toolsCell(record.invokedTool),
+                    element('td', record.inputTokenSize === null ? '未提供' : numbers.format(record.inputTokenSize), 'tokens'),
+                    element('td', record.outputTokenSize === null ? '未提供' : numbers.format(record.outputTokenSize), 'tokens'),
+                    textCell(record.outputText));
+                fragment.append(row);
+            }
+            if (data.items.length) records.replaceChildren(fragment);
+            else emptyRow('此日期區間沒有使用量紀錄。');
+            currentPage = data.page;
+            totalPages = Math.max(1, Math.ceil(data.totalCount / data.pageSize));
+            pageInfo.textContent = `第 ${currentPage} / ${totalPages} 頁 · 共 ${numbers.format(data.totalCount)} 筆`;
+        }
+
+        async function load(page) {
+            if (loading || !query) return;
+            loading = true;
+            search.disabled = recent.disabled = previous.disabled = next.disabled = true;
+            message.className = '';
+            message.textContent = '查詢中…';
+            try {
+                const parameters = new URLSearchParams({ start: query.start, end: query.end, page });
+                const response = await fetch(`./relay/usage-history?${parameters}`, {
+                    headers: { 'X-Api-Key': adminKey.value }, cache: 'no-store'
+                });
+                if (!response.ok) {
+                    throw new Error(response.status === 401 ? 'Admin API key 不正確。' : `查詢失敗（HTTP ${response.status}）。`);
+                }
+                render(await response.json());
+                message.textContent = `查詢區間：${query.startLabel} 至 ${query.endLabel}`;
+            } catch (error) {
+                emptyRow('無法載入使用量紀錄。');
+                currentPage = totalPages = 1;
+                pageInfo.textContent = '第 1 頁';
+                message.className = 'error';
+                message.textContent = error.message;
+            } finally {
+                loading = false;
+                search.disabled = recent.disabled = false;
+                previous.disabled = currentPage <= 1;
+                next.disabled = currentPage >= totalPages;
+            }
+        }
+
+        form.addEventListener('submit', event => {
+            event.preventDefault();
+            if (loading) return;
+            if (startDate.value > endDate.value) {
+                message.className = 'error';
+                message.textContent = '開始日期不可晚於結束日期。';
+                return;
+            }
+            const start = new Date(`${startDate.value}T00:00:00`);
+            const end = new Date(`${endDate.value}T00:00:00`);
+            end.setDate(end.getDate() + 1);
+            query = { start: start.toISOString(), end: end.toISOString(), startLabel: startDate.value, endLabel: endDate.value };
+            load(1);
+        });
+        recent.addEventListener('click', () => { setRecentDates(); form.requestSubmit(); });
+        previous.addEventListener('click', () => load(currentPage - 1));
+        next.addEventListener('click', () => load(currentPage + 1));
+        setRecentDates();
+    </script>
+</body>
+</html>

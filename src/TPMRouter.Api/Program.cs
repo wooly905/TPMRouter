@@ -8,6 +8,7 @@ using TPMRouter.Api.Endpoints;
 using TPMRouter.Api.Options;
 using TPMRouter.Api.Relay;
 using TPMRouter.Api.Upstream;
+using TPMRouter.Api.Usage;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -30,6 +31,7 @@ builder.Services.AddSingleton<ITokenBudgetTracker>(sp =>
         : sp.GetRequiredService<InMemoryTokenBudgetTracker>());
 builder.Services.AddSingleton<RelayMetrics>();
 builder.Services.AddSingleton<RelayService>();
+builder.Services.AddSingleton<UsageHistoryStore>();
 
 builder.Services.AddHealthChecks();
 
@@ -51,11 +53,13 @@ builder.Services.AddOpenTelemetry().WithMetrics(m =>
 });
 
 var app = builder.Build();
+app.Services.GetRequiredService<UsageHistoryStore>().Initialize();
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
 app.UseRouting();
+app.UseMiddleware<UsageHistoryMiddleware>();
 app.UseMiddleware<ClientApiKeyMiddleware>();
 
 app.MapHealthChecks("/healthz");
@@ -70,6 +74,9 @@ app.MapGet("/relay/status", RelayEndpoint.GetStatus)
     .WithMetadata(new ApiKeyRequirement(ApiKeyScope.Admin));
 
 app.MapGet("/relay/dashboard/status", RelayEndpoint.GetStatus);
+
+app.MapGet("/relay/usage-history", UsageHistoryEndpoint.GetHistory)
+    .WithMetadata(new ApiKeyRequirement(ApiKeyScope.Admin));
 
 app.Run();
 

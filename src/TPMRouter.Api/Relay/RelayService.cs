@@ -98,6 +98,13 @@ public sealed class RelayService(IOptions<RelayOptions> options,
         {
             JsonObject body = (JsonObject)requestBody.DeepClone();
             body["model"] = selected.Deployment.Name;
+
+            if (tokenField != "max_output_tokens" && body["stream"]?.GetValue<bool>() == true)
+            {
+                body["stream_options"] ??= new JsonObject();
+                body["stream_options"]!["include_usage"] = true;
+            }
+
             if (maxOutputTokens is null)
             {
                 body[tokenField] = selected.Deployment.MaxOutputTokens;

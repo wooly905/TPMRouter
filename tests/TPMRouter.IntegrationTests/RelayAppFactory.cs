@@ -32,6 +32,7 @@ public sealed class RelayAppFactory(IReadOnlyList<TestEndpoint> endpoints, Actio
     {
         Dictionary<string, string?> settings = new()
         {
+            ["UsageHistory:DatabasePath"] = Path.Combine(Path.GetTempPath(), "TPMRouter.Tests", $"{Guid.NewGuid():N}.db"),
             ["Relay:SafetyFactor"] = "1.0",
             ["Relay:MaxQueueWaitSeconds"] = "5",
             ["Relay:ErrorCooldownSeconds"] = "10",
