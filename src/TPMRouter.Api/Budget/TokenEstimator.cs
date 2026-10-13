@@ -9,9 +9,9 @@ public sealed class TokenEstimator
 
     public int CountPromptTokens(JsonObject request)
     {
-        // Include message framing, tool definitions, and structured output schemas in the conservative estimate.
+        // Include input framing, tool definitions, and structured output schemas in the conservative estimate.
         int count = 3;
-        foreach (string field in new[] { "messages", "input", "instructions", "tools", "functions", "response_format", "text" })
+        foreach (string field in new[] { "input", "instructions", "tools", "text" })
         {
             if (request[field] is { } value)
             {

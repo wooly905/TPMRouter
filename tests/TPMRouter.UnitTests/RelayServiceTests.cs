@@ -7,7 +7,7 @@ namespace TPMRouter.UnitTests;
 public class RelayServiceTests
 {
     [Fact]
-    public async Task RelayChatAsync_EstimateAboveAllDeployments_Returns413WithoutWaitOrUpstreamCall()
+    public async Task RelayResponseAsync_EstimateAboveAllDeployments_Returns413WithoutWaitOrUpstreamCall()
     {
         var options = TestData.Options(0.9, TestData.Deployment("a", 1000, 0, maxOutputTokens: 900), TestData.Deployment("b", 2000, 0, maxOutputTokens: 1800));
         var upstream = new FakeUpstreamClient(_ => FakeUpstreamClient.Ok());
@@ -21,9 +21,9 @@ public class RelayServiceTests
     }
 
     [Fact]
-    public void Validate_MissingMessages_Returns400()
+    public void Validate_MissingInput_Returns400()
     {
-        RelayOutcome? outcome = ChatCompletionsRequest.Validate(new JsonObject { ["model"] = "auto" }, out _);
+        RelayOutcome? outcome = ResponsesRequest.Validate(new JsonObject { ["model"] = "auto" }, out _);
 
         Assert.Equal(StatusCodes.Status400BadRequest, outcome?.StatusCode);
     }
@@ -31,7 +31,7 @@ public class RelayServiceTests
     [Theory]
     [InlineData('a', 110_000)]
     [InlineData('你', 17_000)]
-    public async Task RelayChatAsync_LargeJsonWithEnoughTokenBudget_Returns200(char character, int length)
+    public async Task RelayResponseAsync_LargeJsonWithEnoughTokenBudget_Returns200(char character, int length)
     {
         var options = TestData.Options(0.9, TestData.Deployment("a", 1_000_000, 0));
         var upstream = new FakeUpstreamClient(_ => FakeUpstreamClient.Ok());
@@ -46,7 +46,7 @@ public class RelayServiceTests
     }
 
     [Fact]
-    public async Task RelayChatAsync_SkipsDeploymentWhoseEstimateIsTooLarge()
+    public async Task RelayResponseAsync_SkipsDeploymentWhoseEstimateIsTooLarge()
     {
         var options = TestData.Options(0.9, TestData.Deployment("small", 100, 0, maxOutputTokens: 100, priority: 1), TestData.Deployment("big", 10_000, 0, maxOutputTokens: 100, priority: 2));
         var upstream = new FakeUpstreamClient(_ => FakeUpstreamClient.Ok());
@@ -59,7 +59,7 @@ public class RelayServiceTests
     }
 
     [Fact]
-    public async Task RelayChatAsync_Upstream500_SendsToOtherDeployment()
+    public async Task RelayResponseAsync_Upstream500_SendsToOtherDeployment()
     {
         var options = TestData.Options(0.9, TestData.Deployment("a", 1000, 0, priority: 1), TestData.Deployment("b", 1000, 0, priority: 2));
         var upstream = new FakeUpstreamClient(d => d == "test/a"
@@ -74,7 +74,7 @@ public class RelayServiceTests
     }
 
     [Fact]
-    public async Task RelayChatAsync_Upstream400_ReturnsErrorWithoutRetry()
+    public async Task RelayResponseAsync_Upstream400_ReturnsErrorWithoutRetry()
     {
         var options = TestData.Options(0.9, TestData.Deployment("a", 1000, 0, priority: 1), TestData.Deployment("b", 1000, 0, priority: 2));
         var upstream = new FakeUpstreamClient(_ => new(400, "bad request", default));
@@ -87,21 +87,14 @@ public class RelayServiceTests
         Assert.Single(upstream.Calls);
     }
 
-    private static Task<RelayOutcome> RelayAsync(RelayService service, string text, string? systemPrompt = null)
+    private static Task<RelayOutcome> RelayAsync(RelayService service, string text)
     {
-        JsonArray messages = [];
-        if (systemPrompt is not null)
-        {
-            messages.Add(new JsonObject { ["role"] = "system", ["content"] = systemPrompt });
-        }
-
-        messages.Add(new JsonObject { ["role"] = "user", ["content"] = text });
-        RelayOutcome? invalid = ChatCompletionsRequest.Validate(new JsonObject
+        RelayOutcome? invalid = ResponsesRequest.Validate(new JsonObject
         {
             ["model"] = "auto",
-            ["messages"] = messages,
-        }, out ChatCompletionsRequest? request);
+            ["input"] = text,
+        }, out ResponsesRequest? request);
         Assert.Null(invalid);
-        return service.RelayChatAsync(request!, (_, _) => Task.CompletedTask, () => false, CancellationToken.None);
+        return service.RelayResponseAsync(request!, (_, _) => Task.CompletedTask, () => false, CancellationToken.None);
     }
 }

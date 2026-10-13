@@ -26,14 +26,14 @@ public sealed class DashboardBudgetTests : IDisposable
     [InlineData(500)]
     public async Task EveryUpstreamAttempt_ReservesInputAndOutputCapRegardlessOfStatus(int upstreamStatus)
     {
-        string body = upstreamStatus == 200 ? Upstream.Completion("hello") : """{"error":{"message":"failed"}}""";
-        _upstream.Given(Upstream.ChatRequest("dep-a"))
+        string body = upstreamStatus == 200 ? Upstream.ResponseBody("hello") : """{"error":{"message":"failed"}}""";
+        _upstream.Given(Upstream.ResponseRequest("dep-a"))
             .RespondWith(Response.Create().WithStatusCode(upstreamStatus)
                 .WithHeader("Content-Type", "application/json").WithBody(body));
         await using RelayAppFactory app = new(_upstream, [new("dep-a", MaxOutputTokens: 32_000)]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
-        using HttpResponseMessage response = await client.PostChatAsync("Hi");
+        using HttpResponseMessage response = await client.PostResponseAsync("Hi");
         DeploymentStatus status = Assert.Single(await StatusAsync(client));
 
         Assert.True(status.ReservedTokens > 32_000);
@@ -48,13 +48,13 @@ public sealed class DashboardBudgetTests : IDisposable
     [Fact]
     public async Task SuccessfulRequestWithoutUsage_StillCountsTowardRateLimits()
     {
-        _upstream.Given(Upstream.ChatRequest("dep-a"))
+        _upstream.Given(Upstream.ResponseRequest("dep-a"))
             .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/json")
-                .WithBody("""{"choices":[{"index":0,"message":{"content":"hello"}}]}"""));
+                .WithBody("""{"id":"resp-1","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"hello"}]}]}"""));
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
-        using HttpResponseMessage response = await client.PostChatAsync("Hi");
+        using HttpResponseMessage response = await client.PostResponseAsync("Hi");
         DeploymentStatus status = Assert.Single(await StatusAsync(client));
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -66,13 +66,13 @@ public sealed class DashboardBudgetTests : IDisposable
     [Fact]
     public async Task FailedRequestWithUsage_ContributesReportedTokens()
     {
-        _upstream.Given(Upstream.ChatRequest("dep-a"))
+        _upstream.Given(Upstream.ResponseRequest("dep-a"))
             .RespondWith(Response.Create().WithStatusCode(400).WithHeader("Content-Type", "application/json")
-                .WithBody("""{"error":{"message":"failed"},"usage":{"prompt_tokens":12,"completion_tokens":3}}"""));
+                .WithBody("""{"error":{"message":"failed"},"usage":{"input_tokens":12,"output_tokens":3}}"""));
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
-        using HttpResponseMessage response = await client.PostChatAsync("Hi");
+        using HttpResponseMessage response = await client.PostResponseAsync("Hi");
         DeploymentStatus status = Assert.Single(await StatusAsync(client));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
@@ -83,14 +83,14 @@ public sealed class DashboardBudgetTests : IDisposable
     [Fact]
     public async Task Failover_ReservesBothFailedAndSuccessfulAttempts()
     {
-        _upstream.Given(Upstream.ChatRequest("first"))
+        _upstream.Given(Upstream.ResponseRequest("first"))
             .RespondWith(Response.Create().WithStatusCode(500).WithHeader("Content-Type", "application/json")
-                .WithBody("""{"error":{"message":"failed"},"usage":{"prompt_tokens":10,"completion_tokens":2}}"""));
+                .WithBody("""{"error":{"message":"failed"},"usage":{"input_tokens":10,"output_tokens":2}}"""));
         _upstream.RespondOk("second");
         await using RelayAppFactory app = new(_upstream, [new("first"), new("second", Priority: 2)]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
-        using HttpResponseMessage response = await client.PostChatAsync("Hi");
+        using HttpResponseMessage response = await client.PostResponseAsync("Hi");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.All(await StatusAsync(client), status =>
@@ -104,19 +104,18 @@ public sealed class DashboardBudgetTests : IDisposable
     }
 
     [Fact]
-    public async Task InterruptedChatStream_DoesNotRefundReservation()
+    public async Task InterruptedStream_DoesNotRefundReservation()
     {
-        const string stream = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3}}\n\n";
-        _upstream.Given(Upstream.ChatRequest("dep-a"))
+        const string stream = "event: response.in_progress\ndata: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp-1\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}}\n\n";
+        _upstream.Given(Upstream.ResponseRequest("dep-a"))
             .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "text/event-stream").WithBody(stream));
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
         await Assert.ThrowsAsync<HttpRequestException>(async () =>
         {
-            using HttpResponseMessage response = await client.PostAsync("/v1/chat/completions",
-                new StringContent("""{"model":"auto","messages":[{"role":"user","content":"Hi"}],"stream":true}""",
-                                  Encoding.UTF8, "application/json"));
+            using HttpResponseMessage response = await client.PostAsync("/v1/responses",
+                new StringContent("""{"model":"auto","input":"Hi","stream":true}""", Encoding.UTF8, "application/json"));
         });
 
         DeploymentStatus status = Assert.Single(await StatusAsync(client));
@@ -129,10 +128,10 @@ public sealed class DashboardBudgetTests : IDisposable
     public async Task FailedResponsesEvent_DoesNotRefundReservation()
     {
         const string stream = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"failed\"},\"usage\":{\"input_tokens\":20,\"output_tokens\":5}}}\n\n";
-        _upstream.Given(Request.Create().WithPath("/openai/v1/responses").UsingPost())
+        _upstream.Given(Request.Create().WithPath(Upstream.ResponsesPath).UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "text/event-stream").WithBody(stream));
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
         using HttpResponseMessage response = await client.PostAsync("/v1/responses",
             new StringContent("""{"model":"auto","input":"Hi","stream":true}""", Encoding.UTF8, "application/json"));
@@ -148,7 +147,7 @@ public sealed class DashboardBudgetTests : IDisposable
     public async Task LocalValidationFailure_DoesNotReserveUpstreamBudget()
     {
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
         using HttpResponseMessage response = await client.PostAsync("/v1/responses",
             new StringContent("not-json", Encoding.UTF8, "application/json"));
@@ -165,13 +164,13 @@ public sealed class DashboardBudgetTests : IDisposable
     public async Task FailedAttempt_ExpiresAfter60Seconds()
     {
         FakeTimeProvider time = new();
-        _upstream.Given(Upstream.ChatRequest("dep-a"))
+        _upstream.Given(Upstream.ResponseRequest("dep-a"))
             .RespondWith(Response.Create().WithStatusCode(400).WithHeader("Content-Type", "application/json")
                 .WithBody("""{"error":{"message":"failed"}}"""));
         await using RelayAppFactory app = new(_upstream, [new("dep-a")],
             services: services => services.AddSingleton<TimeProvider>(time));
-        using HttpClient client = app.CreateChatClient();
-        using HttpResponseMessage response = await client.PostChatAsync("Hi");
+        using HttpClient client = app.CreateOpenAIClient();
+        using HttpResponseMessage response = await client.PostResponseAsync("Hi");
 
         time.Advance(TimeSpan.FromSeconds(59));
         Assert.True(Assert.Single(await StatusAsync(client)).ReservedTokens > 100);
@@ -184,45 +183,38 @@ public sealed class DashboardBudgetTests : IDisposable
     private static async Task<DeploymentStatus[]> StatusAsync(HttpClient client) =>
         (await client.GetFromJsonAsync<DeploymentStatus[]>("/relay/dashboard/status"))!;
 
-    [Theory]
-    [InlineData("/v1/chat/completions", "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3}}\n\ndata: [DONE]\n\n", 15)]
-    [InlineData("/v1/responses", "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":20,\"output_tokens\":5}}}\n\n", 25)]
-    public async Task SuccessfulStream_RecordsUsageOnce(string path, string stream, long expectedTokens)
+    [Fact]
+    public async Task SuccessfulStream_RecordsUsageOnce()
     {
-        _upstream.Given(Request.Create().WithPath($"/openai{path}").UsingPost())
+        const string stream = "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":20,\"output_tokens\":5}}}\n\n";
+        _upstream.Given(Request.Create().WithPath(Upstream.ResponsesPath).UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "text/event-stream").WithBody(stream));
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
-        using HttpClient client = app.CreateChatClient();
-        string request = path == "/v1/responses"
-            ? """{"model":"auto","input":"Hi","stream":true}"""
-            : """{"model":"auto","messages":[{"role":"user","content":"Hi"}],"stream":true}""";
+        using HttpClient client = app.CreateOpenAIClient();
 
-        using HttpResponseMessage response = await client.PostAsync(path, new StringContent(request, Encoding.UTF8, "application/json"));
+        using HttpResponseMessage response = await client.PostAsync("/v1/responses",
+            new StringContent("""{"model":"auto","input":"Hi","stream":true}""", Encoding.UTF8, "application/json"));
         DeploymentStatus status = Assert.Single(await StatusAsync(client));
 
         Assert.Equal(stream, await response.Content.ReadAsStringAsync());
-        Assert.Equal(expectedTokens, status.ActualTokens);
+        Assert.Equal(25, status.ActualTokens);
         Assert.Equal(1, status.RequestsInWindow);
     }
 
-    [Theory]
-    [InlineData("/v1/chat/completions", "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3}}\n\n")]
-    [InlineData("/v1/responses", "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}}\n\n")]
-    public async Task FailureWritingEventDelimiter_RetainsUsageAlreadyReceived(string path, string stream)
+    [Fact]
+    public async Task FailureWritingEventDelimiter_RetainsUsageAlreadyReceived()
     {
-        _upstream.Given(Request.Create().WithPath($"/openai{path}").UsingPost())
+        const string stream = "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}}\n\n";
+        _upstream.Given(Request.Create().WithPath(Upstream.ResponsesPath).UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "text/event-stream").WithBody(stream));
         await using RelayAppFactory app = new(_upstream, [new("dep-a")],
             services: services => services.AddSingleton<IStartupFilter>(new DelimiterFailureFilter()));
-        using HttpClient client = app.CreateChatClient();
-        string request = path == "/v1/responses"
-            ? """{"model":"auto","input":"Hi","stream":true}"""
-            : """{"model":"auto","messages":[{"role":"user","content":"Hi"}],"stream":true}""";
+        using HttpClient client = app.CreateOpenAIClient();
 
         Exception? failure = await Record.ExceptionAsync(async () =>
         {
-            using HttpResponseMessage response = await client.PostAsync(path,
-                new StringContent(request, Encoding.UTF8, "application/json"));
+            using HttpResponseMessage response = await client.PostAsync("/v1/responses",
+                new StringContent("""{"model":"auto","input":"Hi","stream":true}""", Encoding.UTF8, "application/json"));
         });
 
         Assert.NotNull(failure);

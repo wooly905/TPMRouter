@@ -24,22 +24,21 @@ public sealed class RelayEndpointTests : IDisposable
         _upstream.RespondOk("dep-a", "hello");
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
 
-        HttpResponseMessage response = await app.CreateChatClient().PostChatAsync("Hi", "You are helpful.");
+        HttpResponseMessage response = await app.CreateOpenAIClient().PostResponseAsync("Hi", "You are helpful.");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         JsonElement body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal("hello", body.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString());
+        Assert.Equal("hello", body.GetProperty("output")[0].GetProperty("content")[0].GetProperty("text").GetString());
         Assert.True(_upstream.LogEntries.Single().IsFor("dep-a"));
-        Assert.Equal("stop", body.GetProperty("choices")[0].GetProperty("finish_reason").GetString());
-        Assert.Equal(12, body.GetProperty("usage").GetProperty("prompt_tokens").GetInt32());
-        Assert.Equal(3, body.GetProperty("usage").GetProperty("completion_tokens").GetInt32());
+        Assert.Equal("completed", body.GetProperty("status").GetString());
+        Assert.Equal(12, body.GetProperty("usage").GetProperty("input_tokens").GetInt32());
+        Assert.Equal(3, body.GetProperty("usage").GetProperty("output_tokens").GetInt32());
         Assert.Equal(15, body.GetProperty("usage").GetProperty("total_tokens").GetInt32());
 
-        string upstreamBody = _upstream.LogEntries.Single().RequestMessage?.Body ?? "";
-        Assert.Contains("You are helpful.", upstreamBody);
-        Assert.Contains("\"system\"", upstreamBody);
-        Assert.Contains("\"max_completion_tokens\"", upstreamBody);
-        Assert.DoesNotContain("\"max_tokens\"", upstreamBody);
+        JsonObject upstreamBody = (JsonObject)JsonNode.Parse(_upstream.LogEntries.Single().RequestMessage!.Body!)!;
+        Assert.Equal("You are helpful.", upstreamBody["instructions"]!.GetValue<string>());
+        Assert.Equal(100, upstreamBody["max_output_tokens"]!.GetValue<int>());
+        Assert.Null(upstreamBody["max_tokens"]);
     }
 
     [Theory]
@@ -49,7 +48,7 @@ public sealed class RelayEndpointTests : IDisposable
     {
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
 
-        using HttpResponseMessage response = await app.CreateChatClient()
+        using HttpResponseMessage response = await app.CreateOpenAIClient()
             .PostAsJsonAsync($"/relay{query}", new { systemPrompt = "Be helpful.", text = "Hi" });
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
@@ -62,7 +61,7 @@ public sealed class RelayEndpointTests : IDisposable
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
 
         _upstream.RespondOk("dep-a");
-        HttpResponseMessage response = await app.CreateChatClient().PostChatAsync("");
+        HttpResponseMessage response = await app.CreateOpenAIClient().PostResponseAsync("");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -75,7 +74,7 @@ public sealed class RelayEndpointTests : IDisposable
     {
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
 
-        HttpResponseMessage response = await app.CreateChatClient(apiKey).PostChatAsync("Hi");
+        HttpResponseMessage response = await app.CreateOpenAIClient(apiKey).PostResponseAsync("Hi");
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.Empty(_upstream.LogEntries);
@@ -84,7 +83,7 @@ public sealed class RelayEndpointTests : IDisposable
     [Fact]
     public async Task Upstream429_SendsRequestToOtherDeployment()
     {
-        _upstream.Given(Upstream.ChatRequest("dep-a"))
+        _upstream.Given(Upstream.ResponseRequest("dep-a"))
             .RespondWith(Response.Create()
                 .WithStatusCode(429)
                 .WithHeader("retry-after-ms", "30000")
@@ -93,11 +92,11 @@ public sealed class RelayEndpointTests : IDisposable
         _upstream.RespondOk("dep-b", "from b");
         await using RelayAppFactory app = new(_upstream, [new("dep-a", Priority: 1), new("dep-b", Priority: 2)]);
 
-        HttpResponseMessage response = await app.CreateChatClient().PostChatAsync("Hi");
+        HttpResponseMessage response = await app.CreateOpenAIClient().PostResponseAsync("Hi");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         JsonElement body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal("from b", body.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString());
+        Assert.Equal("from b", body.GetProperty("output")[0].GetProperty("content")[0].GetProperty("text").GetString());
         // The SDK must not retry the 429 on the same deployment.
         Assert.Single(_upstream.LogEntries, e => e.IsFor("dep-a"));
     }
@@ -105,7 +104,7 @@ public sealed class RelayEndpointTests : IDisposable
     [Fact]
     public async Task Upstream400_ReturnsErrorWithoutRetry()
     {
-        _upstream.Given(Upstream.ChatRequest("dep-a"))
+        _upstream.Given(Upstream.ResponseRequest("dep-a"))
             .RespondWith(Response.Create()
                 .WithStatusCode(400)
                 .WithHeader("Content-Type", "application/json")
@@ -113,7 +112,7 @@ public sealed class RelayEndpointTests : IDisposable
         _upstream.RespondOk("dep-b");
         await using RelayAppFactory app = new(_upstream, [new("dep-a", Priority: 1), new("dep-b", Priority: 2)]);
 
-        HttpResponseMessage response = await app.CreateChatClient().PostChatAsync("Hi");
+        HttpResponseMessage response = await app.CreateOpenAIClient().PostResponseAsync("Hi");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         JsonElement body = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -129,11 +128,11 @@ public sealed class RelayEndpointTests : IDisposable
             _upstream,
             [new("dep-a", TokensPerMinute: 1000, MaxOutputTokens: 600)],
             s => s["Relay:MaxQueueWaitSeconds"] = "1");
-        HttpClient client = app.CreateChatClient();
+        HttpClient client = app.CreateOpenAIClient();
 
-        Assert.Equal(HttpStatusCode.OK, (await client.PostChatAsync("Hi")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.PostResponseAsync("Hi")).StatusCode);
         Stopwatch stopwatch = Stopwatch.StartNew();
-        HttpResponseMessage response = await client.PostChatAsync("Hi");
+        HttpResponseMessage response = await client.PostResponseAsync("Hi");
 
         Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
         Assert.NotNull(response.Headers.RetryAfter?.Delta);
@@ -145,23 +144,23 @@ public sealed class RelayEndpointTests : IDisposable
     [Fact]
     public async Task QueueWait_SendsRequestAfterCooldownEnds()
     {
-        _upstream.Given(Upstream.ChatRequest("dep-a"))
+        _upstream.Given(Upstream.ResponseRequest("dep-a"))
             .InScenario("cooldown")
             .WillSetStateTo("recovered")
             .RespondWith(Response.Create().WithStatusCode(429).WithHeader("retry-after-ms", "500"));
-        _upstream.Given(Upstream.ChatRequest("dep-a"))
+        _upstream.Given(Upstream.ResponseRequest("dep-a"))
             .InScenario("cooldown")
             .WhenStateIs("recovered")
             .RespondWith(Response.Create()
                 .WithStatusCode(200)
                 .WithHeader("Content-Type", "application/json")
-                .WithBody(Upstream.Completion("late")));
+                .WithBody(Upstream.ResponseBody("late")));
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
-        HttpClient client = app.CreateChatClient();
+        HttpClient client = app.CreateOpenAIClient();
 
-        HttpResponseMessage first = await client.PostChatAsync("Hi");
+        HttpResponseMessage first = await client.PostResponseAsync("Hi");
         Stopwatch stopwatch = Stopwatch.StartNew();
-        HttpResponseMessage second = await client.PostChatAsync("Hi");
+        HttpResponseMessage second = await client.PostResponseAsync("Hi");
 
         Assert.Equal(HttpStatusCode.TooManyRequests, first.StatusCode);
         Assert.Equal(HttpStatusCode.OK, second.StatusCode);
@@ -178,10 +177,10 @@ public sealed class RelayEndpointTests : IDisposable
             s.AddSingleton(sp => recorder = new RecordingUpstreamClient(ActivatorUtilities.CreateInstance<AzureOpenAIUpstreamClient>(sp)));
             s.AddSingleton<IUpstreamClient>(sp => sp.GetRequiredService<RecordingUpstreamClient>());
         });
-        HttpClient client = app.CreateChatClient();
+        HttpClient client = app.CreateOpenAIClient();
         using CancellationTokenSource cts = new(TimeSpan.FromMilliseconds(500));
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.PostChatAsync("Hi", cancellationToken: cts.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.PostResponseAsync("Hi", cancellationToken: cts.Token));
 
         Task<Exception?> completed = recorder!.Completed.Task;
         Assert.Same(completed, await Task.WhenAny(completed, Task.Delay(TimeSpan.FromSeconds(5))));
@@ -202,9 +201,9 @@ public sealed class RelayEndpointTests : IDisposable
                 s["Relay:RequestDeadlineSeconds"] = "2";
             });
 
-        HttpClient client = app.CreateChatClient();
+        HttpClient client = app.CreateOpenAIClient();
         Stopwatch stopwatch = Stopwatch.StartNew();
-        HttpResponseMessage response = await client.PostChatAsync("Hi");
+        HttpResponseMessage response = await client.PostResponseAsync("Hi");
 
         Assert.Equal(HttpStatusCode.GatewayTimeout, response.StatusCode);
         Assert.InRange(stopwatch.Elapsed.TotalSeconds, 1.5, 6);
@@ -215,21 +214,21 @@ public sealed class RelayEndpointTests : IDisposable
     }
 
     [Fact]
-    public async Task EmptyContent_Returns200WithNullContentAndLength()
+    public async Task IncompleteResponse_Returns200WithEmptyOutput()
     {
-        _upstream.Given(Upstream.ChatRequest("dep-a"))
+        _upstream.Given(Upstream.ResponseRequest("dep-a"))
             .RespondWith(Response.Create()
                 .WithStatusCode(200)
                 .WithHeader("Content-Type", "application/json")
-                .WithBody(Upstream.Completion(null, "length")));
+                .WithBody(Upstream.ResponseBody(null, "incomplete")));
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
 
-        HttpResponseMessage response = await app.CreateChatClient().PostChatAsync("Hi");
+        HttpResponseMessage response = await app.CreateOpenAIClient().PostResponseAsync("Hi");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         JsonElement body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal(JsonValueKind.Null, body.GetProperty("choices")[0].GetProperty("message").GetProperty("content").ValueKind);
-        Assert.Equal("length", body.GetProperty("choices")[0].GetProperty("finish_reason").GetString());
+        Assert.Equal(0, body.GetProperty("output").GetArrayLength());
+        Assert.Equal("incomplete", body.GetProperty("status").GetString());
     }
 
     [Fact]
@@ -263,15 +262,15 @@ public sealed class RelayEndpointTests : IDisposable
     [Fact]
     public async Task Status_RequiresAdminKeyAndShowsTrackerValues()
     {
-        _upstream.Given(Upstream.ChatRequest("dep-a"))
+        _upstream.Given(Upstream.ResponseRequest("dep-a"))
             .RespondWith(Response.Create()
                 .WithStatusCode(200)
                 .WithHeader("Content-Type", "application/json")
                 .WithHeader("x-ratelimit-remaining-tokens", "5000")
                 .WithHeader("x-ratelimit-remaining-requests", "40")
-                .WithBody(Upstream.Completion("ok")));
+                .WithBody(Upstream.ResponseBody("ok")));
         await using RelayAppFactory app = new(_upstream, [new("dep-a", TokensPerMinute: 10_000, RequestsPerMinute: 50, MaxOutputTokens: 100)]);
-        await app.CreateChatClient().PostChatAsync("Hi");
+        await app.CreateOpenAIClient().PostResponseAsync("Hi");
 
         HttpResponseMessage denied = await app.CreateRelayClient(RelayAppFactory.ClientKey).GetAsync("/relay/status");
         HttpResponseMessage allowed = await app.CreateRelayClient(RelayAppFactory.AdminKey).GetAsync("/relay/status");
@@ -291,14 +290,11 @@ public sealed class RelayEndpointTests : IDisposable
     {
         public TaskCompletionSource<Exception?> Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public Task<UpstreamResult> CreateResponseAsync(string deployment, JsonObject request, Func<PipelineResponse, CancellationToken, Task> onStream, CancellationToken cancellationToken) =>
-            inner.CreateResponseAsync(deployment, request, onStream, cancellationToken);
-
-        public async Task<UpstreamResult> CompleteChatAsync(string deployment, JsonObject request, Func<PipelineResponse, CancellationToken, Task> onStream, CancellationToken cancellationToken)
+        public async Task<UpstreamResult> CreateResponseAsync(string deployment, JsonObject request, Func<PipelineResponse, CancellationToken, Task> onStream, CancellationToken cancellationToken)
         {
             try
             {
-                UpstreamResult result = await inner.CompleteChatAsync(deployment, request, onStream, cancellationToken);
+                UpstreamResult result = await inner.CreateResponseAsync(deployment, request, onStream, cancellationToken);
                 Completed.TrySetResult(null);
                 return result;
             }

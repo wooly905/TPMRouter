@@ -39,7 +39,7 @@ public sealed class ResponsesEndpointTests : IDisposable
     {
         Respond(_upstream, "dep-a", ResponseBody);
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
         JsonObject body = (JsonObject)JsonNode.Parse("""
             {"model":"auto","instructions":"Be helpful.","input":[{"role":"user","content":[{"type":"input_text","text":"Find it"}]},
              {"type":"reasoning","id":"rs-1","summary":[],"encrypted_content":"opaque"},
@@ -93,7 +93,7 @@ public sealed class ResponsesEndpointTests : IDisposable
         await using RelayAppFactory app = new([
             new("endpoint-1", _upstream, [new("second", Priority: 10)], "key-1"),
             new("endpoint-2", other, [new("first", RequestsPerMinute: 1, Priority: 9)], "key-2")]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
         JsonObject body = new()
         {
             ["model"] = "auto",
@@ -133,7 +133,7 @@ public sealed class ResponsesEndpointTests : IDisposable
     {
         Respond(_upstream, "large", ResponseBody);
         await using RelayAppFactory app = new(_upstream, [new("small", MaxOutputTokens: 10), new("large", MaxOutputTokens: 100, Priority: 2)]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
         using HttpResponseMessage response = await PostAsync(client, """{"model":"auto","input":"Hi","max_output_tokens":50}""");
 
@@ -141,7 +141,6 @@ public sealed class ResponsesEndpointTests : IDisposable
         JsonObject forwarded = (JsonObject)JsonNode.Parse(_upstream.LogEntries.Single().RequestMessage!.Body!)!;
         Assert.Equal("large", forwarded["model"]!.GetValue<string>());
         Assert.Equal(50, forwarded["max_output_tokens"]!.GetValue<int>());
-        Assert.Null(forwarded["max_completion_tokens"]);
     }
 
     [Fact]
@@ -150,7 +149,7 @@ public sealed class ResponsesEndpointTests : IDisposable
         Respond(_upstream, "large", ResponseBody);
         await using RelayAppFactory app = new(_upstream,
             [new("small", TokensPerMinute: 1000), new("large", TokensPerMinute: 10_000, Priority: 2)]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
         JsonObject body = new()
         {
             ["model"] = "auto",
@@ -180,7 +179,7 @@ public sealed class ResponsesEndpointTests : IDisposable
             new("endpoint-1", _upstream, [new("second", TokensPerMinute: 100_000, Priority: 10)]),
             new("endpoint-2", other, [new("first", TokensPerMinute: 40_000, Priority: 9)])],
             settings => settings["Relay:MaxQueueWaitSeconds"] = "0");
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
         JsonObject body = new()
         {
             ["model"] = "auto",
@@ -209,18 +208,15 @@ public sealed class ResponsesEndpointTests : IDisposable
         Respond(_upstream, "dep-a", ResponseBody);
         await using RelayAppFactory app = new(_upstream, [new("dep-a", RequestsPerMinute: 1, MaxOutputTokens: 75)],
             settings => settings["Relay:MaxQueueWaitSeconds"] = "0");
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
         using HttpResponseMessage first = await PostAsync(client, RequestBody);
         JsonObject forwarded = (JsonObject)JsonNode.Parse(_upstream.LogEntries.Single().RequestMessage!.Body!)!;
         using HttpResponseMessage second = await PostAsync(client, RequestBody);
-        using HttpResponseMessage chat = await client.PostAsync("/v1/chat/completions",
-            new StringContent("""{"model":"auto","messages":[{"role":"user","content":"Hi"}]}""", Encoding.UTF8, "application/json"));
 
         Assert.Equal(HttpStatusCode.OK, first.StatusCode);
         Assert.Equal(75, forwarded["max_output_tokens"]!.GetValue<int>());
         Assert.Equal(HttpStatusCode.TooManyRequests, second.StatusCode);
         Assert.NotNull(second.Headers.RetryAfter);
-        Assert.Equal(HttpStatusCode.TooManyRequests, chat.StatusCode);
         Assert.Single(_upstream.LogEntries);
     }
 
@@ -232,7 +228,7 @@ public sealed class ResponsesEndpointTests : IDisposable
         Respond(_upstream, "first", """{"error":{"message":"unavailable"}}""", status);
         Respond(_upstream, "second", ResponseBody);
         await using RelayAppFactory app = new(_upstream, [new("first"), new("second", Priority: 2)]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
         using HttpResponseMessage response = await PostAsync(client, RequestBody);
 
@@ -246,7 +242,7 @@ public sealed class ResponsesEndpointTests : IDisposable
         const string error = """{"error":{"message":"unsupported effort","type":"invalid_request_error","param":"reasoning.effort","code":"unsupported_value"}}""";
         Respond(_upstream, "first", error, 400);
         await using RelayAppFactory app = new(_upstream, [new("first"), new("second", Priority: 2)]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
         using HttpResponseMessage response = await PostAsync(client, RequestBody);
 
@@ -266,7 +262,7 @@ public sealed class ResponsesEndpointTests : IDisposable
             + $"event: {terminal}\ndata: {{\"type\":\"{terminal}\",\"response\":{{\"id\":\"resp-1\"}}}}\n\n";
         Respond(_upstream, "dep-a", chunks, contentType: "text/event-stream");
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
         using HttpResponseMessage response = await PostAsync(client, """{"model":"auto","input":"Hi","stream":true}""");
 
@@ -277,13 +273,13 @@ public sealed class ResponsesEndpointTests : IDisposable
     }
 
     [Fact]
-    public async Task Stream429_FailsOverWithoutChatTerminator()
+    public async Task Stream429_FailsOverBeforeFirstEvent()
     {
         const string chunks = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n";
         Respond(_upstream, "first", """{"error":{"message":"limited"}}""", 429);
         Respond(_upstream, "second", chunks, contentType: "text/event-stream");
         await using RelayAppFactory app = new(_upstream, [new("first"), new("second", Priority: 2)]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
         using HttpResponseMessage response = await PostAsync(client, """{"model":"auto","input":"Hi","stream":true}""");
 
@@ -299,7 +295,7 @@ public sealed class ResponsesEndpointTests : IDisposable
         Respond(_upstream, "first", chunks, contentType: "text/event-stream");
         Respond(_upstream, "second", ResponseBody);
         await using RelayAppFactory app = new(_upstream, [new("first"), new("second", Priority: 2)]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
         Exception? failure = await Record.ExceptionAsync(async () =>
         {
@@ -335,7 +331,7 @@ public sealed class ResponsesEndpointTests : IDisposable
         await upstream.StartAsync();
         await using RelayAppFactory app = new(_upstream, [new("dep-a")],
             settings => settings["Relay:Endpoints:0:Endpoint"] = upstream.Urls.Single());
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
         try
         {
             using HttpRequestMessage request = new(HttpMethod.Post, "/v1/responses")
@@ -365,7 +361,7 @@ public sealed class ResponsesEndpointTests : IDisposable
     public async Task InvalidRequest_Returns400WithoutUpstream(string body)
     {
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
         using HttpResponseMessage response = await PostAsync(client, body);
 
@@ -377,7 +373,7 @@ public sealed class ResponsesEndpointTests : IDisposable
     public async Task MissingBearerKey_Returns401WithoutUpstream()
     {
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
-        using HttpClient client = app.CreateChatClient(null);
+        using HttpClient client = app.CreateOpenAIClient(null);
 
         using HttpResponseMessage response = await PostAsync(client, RequestBody);
 

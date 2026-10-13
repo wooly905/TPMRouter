@@ -30,49 +30,15 @@ public sealed class RelayService(IOptions<RelayOptions> options,
     private readonly Dictionary<string, DeploymentTarget> _deployments =
         options.Value.GetDeploymentTargets().ToDictionary(d => d.Key, StringComparer.Ordinal);
 
-    public Task<RelayOutcome> RelayChatAsync(ChatCompletionsRequest request,
-                                             Func<PipelineResponse, CancellationToken, Task> onStream,
-                                             Func<bool> hasStarted,
-                                             CancellationToken requestAborted,
-                                             UsageRecordBuilder? streamedUsage = null) =>
-        RelayInferenceAsync(request.Body,
-                            request.Model,
-                            request.MaxOutputTokens,
-                            request.Choices,
-                            request.Body["max_tokens"] is not null ? "max_tokens" : "max_completion_tokens",
-                            upstream.CompleteChatAsync,
-                            onStream,
-                            hasStarted,
-                            requestAborted,
-                            streamedUsage);
-
-    public Task<RelayOutcome> RelayResponseAsync(ResponsesRequest request,
-                                                 Func<PipelineResponse, CancellationToken, Task> onStream,
-                                                 Func<bool> hasStarted,
-                                                 CancellationToken requestAborted,
-                                                 UsageRecordBuilder? streamedUsage = null) =>
-        RelayInferenceAsync(request.Body,
-                            request.Model,
-                            request.MaxOutputTokens,
-                            1,
-                            "max_output_tokens",
-                            upstream.CreateResponseAsync,
-                            onStream,
-                            hasStarted,
-                            requestAborted,
-                            streamedUsage);
-
-    private async Task<RelayOutcome> RelayInferenceAsync(JsonObject requestBody,
-                                                         string model,
-                                                         int? maxOutputTokens,
-                                                         int choices,
-                                                         string tokenField,
-                                                         Func<string, JsonObject, Func<PipelineResponse, CancellationToken, Task>, CancellationToken, Task<UpstreamResult>> complete,
-                                                         Func<PipelineResponse, CancellationToken, Task> onStream,
-                                                         Func<bool> hasStarted,
-                                                         CancellationToken requestAborted,
-                                                         UsageRecordBuilder? streamedUsage)
+    public async Task<RelayOutcome> RelayResponseAsync(ResponsesRequest request,
+                                                       Func<PipelineResponse, CancellationToken, Task> onStream,
+                                                       Func<bool> hasStarted,
+                                                       CancellationToken requestAborted,
+                                                       UsageRecordBuilder? streamedUsage = null)
     {
+        JsonObject requestBody = request.Body;
+        string model = request.Model;
+        int? maxOutputTokens = request.MaxOutputTokens;
         List<DeploymentTarget> candidates = _deployments.Values
             .Where(d => model == "auto" || d.Deployment.Model == model).ToList();
         if (candidates.Count == 0)
@@ -84,7 +50,7 @@ public sealed class RelayService(IOptions<RelayOptions> options,
         if (candidates.Count == 0)
         {
             return new RelayOutcome(400, Error: "The requested output limit exceeds the configured limit for this model.",
-                                    ErrorParam: tokenField);
+                                    ErrorParam: "max_output_tokens");
         }
 
         int promptTokens = estimator.CountPromptTokens(requestBody);
@@ -92,7 +58,7 @@ public sealed class RelayService(IOptions<RelayOptions> options,
         foreach (DeploymentTarget target in candidates)
         {
             DeploymentOptions deployment = target.Deployment;
-            long estimate = promptTokens + (long)choices * (maxOutputTokens ?? deployment.MaxOutputTokens);
+            long estimate = promptTokens + (maxOutputTokens ?? deployment.MaxOutputTokens);
             if (DeploymentSelector.FitsDeployment(estimate, deployment, _options.SafetyFactor))
             {
                 estimates[target.Key] = estimate;
@@ -110,26 +76,19 @@ public sealed class RelayService(IOptions<RelayOptions> options,
             JsonObject body = (JsonObject)requestBody.DeepClone();
             body["model"] = selected.Deployment.Name;
 
-            if (tokenField != "max_output_tokens" && body["stream"]?.GetValue<bool>() == true)
-            {
-                body["stream_options"] ??= new JsonObject();
-                body["stream_options"]!["include_usage"] = true;
-            }
-
             if (maxOutputTokens is null)
             {
-                body[tokenField] = selected.Deployment.MaxOutputTokens;
+                body["max_output_tokens"] = selected.Deployment.MaxOutputTokens;
             }
 
             DeploymentStatus status = (await tracker.GetStatusAsync())
                 .Single(s => s.EndpointId == selected.EndpointId && s.Name == selected.Deployment.Name);
-            logger.LogInformation("Token budget diagnostic: model {Model}, endpoint {EndpointId}, deployment {Deployment}, estimated input {EstimatedInputTokens}, output limit {OutputTokenLimit}, choices {Choices}, attempt reservation {ReservedTokens}, window reserved {WindowReservedTokens}, window requests {WindowRequests}, available {AvailableTokens}, effective TPM {EffectiveTokensPerMinute}.",
+            logger.LogInformation("Token budget diagnostic: model {Model}, endpoint {EndpointId}, deployment {Deployment}, estimated input {EstimatedInputTokens}, output limit {OutputTokenLimit}, attempt reservation {ReservedTokens}, window reserved {WindowReservedTokens}, window requests {WindowRequests}, available {AvailableTokens}, effective TPM {EffectiveTokensPerMinute}.",
                                   model,
                                   selected.EndpointId,
                                   selected.Deployment.Name,
                                   promptTokens,
                                   maxOutputTokens ?? selected.Deployment.MaxOutputTokens,
-                                  choices,
                                   estimates[selected.Key],
                                   status.ReservedTokens,
                                   status.RequestsInWindow,
@@ -138,7 +97,7 @@ public sealed class RelayService(IOptions<RelayOptions> options,
 
             try
             {
-                UpstreamResult result = await complete(selected.Key, body, async (response, streamToken) =>
+                UpstreamResult result = await upstream.CreateResponseAsync(selected.Key, body, async (response, streamToken) =>
                 {
                     RateLimitHeaders headers = AzureOpenAIUpstreamClient.ReadRateLimits(response.Headers);
                     await tracker.RecordHeadersAsync(selected.Key, headers.RemainingTokens, headers.RemainingRequests, timeProvider.GetUtcNow());

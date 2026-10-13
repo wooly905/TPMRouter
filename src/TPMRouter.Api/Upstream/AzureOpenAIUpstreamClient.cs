@@ -5,7 +5,6 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Options;
 using OpenAI;
-using OpenAI.Chat;
 using OpenAI.Responses;
 using TPMRouter.Api.Options;
 
@@ -15,7 +14,6 @@ namespace TPMRouter.Api.Upstream;
 
 public interface IUpstreamClient
 {
-    Task<UpstreamResult> CompleteChatAsync(string deployment, JsonObject request, Func<PipelineResponse, CancellationToken, Task> onStream, CancellationToken cancellationToken);
     Task<UpstreamResult> CreateResponseAsync(string deployment, JsonObject request, Func<PipelineResponse, CancellationToken, Task> onStream, CancellationToken cancellationToken);
 }
 
@@ -30,12 +28,10 @@ public sealed record UpstreamResult(int Status,
 
 public sealed class AzureOpenAIUpstreamClient : IUpstreamClient
 {
-    private readonly Dictionary<string, ChatClient> _chatClients;
     private readonly Dictionary<string, ResponsesClient> _responseClients;
 
     public AzureOpenAIUpstreamClient(IOptions<RelayOptions> options)
     {
-        _chatClients = new(StringComparer.Ordinal);
         _responseClients = new(StringComparer.Ordinal);
         foreach (EndpointOptions endpoint in options.Value.Endpoints)
         {
@@ -49,17 +45,10 @@ public sealed class AzureOpenAIUpstreamClient : IUpstreamClient
             foreach (DeploymentOptions deployment in endpoint.Deployments)
             {
                 DeploymentTarget target = new(endpoint.Id, deployment);
-                _chatClients.Add(target.Key, client.GetChatClient(deployment.Name));
                 _responseClients.Add(target.Key, client.GetResponsesClient());
             }
         }
     }
-
-    public Task<UpstreamResult> CompleteChatAsync(string deployment,
-                                                  JsonObject request,
-                                                  Func<PipelineResponse, CancellationToken, Task> onStream,
-                                                  CancellationToken cancellationToken) =>
-        CompleteAsync(request, _chatClients[deployment].CompleteChatAsync, onStream, cancellationToken);
 
     public Task<UpstreamResult> CreateResponseAsync(string deployment,
                                                     JsonObject request,

@@ -10,7 +10,8 @@ public sealed class MultiEndpointTests : IDisposable
 {
     private readonly WireMockServer _first = WireMockServer.Start();
     private readonly WireMockServer _second = WireMockServer.Start();
-    private const string StreamBody = "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"upstream-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n";
+    private const string TerminalEvent = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}}\n\n";
+    private const string StreamBody = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"hello\"}\n\n" + TerminalEvent;
 
     public void Dispose()
     {
@@ -25,14 +26,14 @@ public sealed class MultiEndpointTests : IDisposable
     [InlineData(503, true)]
     public async Task ExplicitModel_FailsOverAcrossEndpointsWithCorrectCredentials(int status, bool stream)
     {
-        _first.Given(Upstream.ChatRequest("primary-deployment").WithHeader("Authorization", "Bearer first-key"))
+        _first.Given(Upstream.ResponseRequest("primary-deployment").WithHeader("Authorization", "Bearer first-key"))
             .RespondWith(Response.Create().WithStatusCode(status)
                 .WithHeader("Content-Type", "application/json")
                 .WithHeader("retry-after-ms", "30000")
                 .WithHeader("x-ratelimit-remaining-tokens", "0")
                 .WithBody("""{"error":{"message":"unavailable"}}"""));
-        string expected = stream ? StreamBody : Upstream.Completion("from second");
-        _second.Given(Upstream.ChatRequest("backup-deployment").WithHeader("Authorization", "Bearer second-key"))
+        string expected = stream ? StreamBody : Upstream.ResponseBody("from second");
+        _second.Given(Upstream.ResponseRequest("backup-deployment").WithHeader("Authorization", "Bearer second-key"))
             .RespondWith(Response.Create().WithStatusCode(200)
                 .WithHeader("Content-Type", stream ? "text/event-stream" : "application/json")
                 .WithHeader("x-ratelimit-remaining-tokens", "5000")
@@ -44,12 +45,12 @@ public sealed class MultiEndpointTests : IDisposable
             new("second", _second, [new("backup-deployment", Priority: 2, Model: "shared-model"),
                                     new("unrelated", Priority: 0, Model: "other-model")], "second-key"),
         ]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
-        using HttpResponseMessage response = await client.PostAsJsonAsync("/v1/chat/completions", new
+        using HttpResponseMessage response = await client.PostAsJsonAsync("/v1/responses", new
         {
             model = "shared-model",
-            messages = new[] { new { role = "user", content = "Hi" } },
+            input = "Hi",
             stream,
         });
 
@@ -82,9 +83,9 @@ public sealed class MultiEndpointTests : IDisposable
             new("first", _first, [new("shared", Priority: firstPriority)]),
             new("second", _second, [new("shared", TokensPerMinute: secondTpm, Priority: secondPriority)]),
         ]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
-        using HttpResponseMessage response = await client.PostChatAsync("Hi");
+        using HttpResponseMessage response = await client.PostResponseAsync("Hi");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Contains("from second", await response.Content.ReadAsStringAsync());
@@ -95,7 +96,7 @@ public sealed class MultiEndpointTests : IDisposable
     [Fact]
     public async Task SameNamedDeployment429_FailsOverWithoutExcludingOtherEndpoint()
     {
-        _first.Given(Upstream.ChatRequest("shared"))
+        _first.Given(Upstream.ResponseRequest("shared"))
             .RespondWith(Response.Create().WithStatusCode(429)
                 .WithHeader("Content-Type", "application/json")
                 .WithBody("""{"error":{"message":"limited"}}"""));
@@ -105,9 +106,9 @@ public sealed class MultiEndpointTests : IDisposable
             new("first", _first, [new("shared", Priority: 1)]),
             new("second", _second, [new("shared", Priority: 2)]),
         ]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
-        using HttpResponseMessage response = await client.PostChatAsync("Hi");
+        using HttpResponseMessage response = await client.PostResponseAsync("Hi");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Single(_first.LogEntries);
@@ -128,9 +129,9 @@ public sealed class MultiEndpointTests : IDisposable
             s["Relay:UpstreamTimeoutSeconds"] = "1";
             s["Relay:RequestDeadlineSeconds"] = "4";
         });
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
-        using HttpResponseMessage response = await client.PostChatAsync("Hi");
+        using HttpResponseMessage response = await client.PostResponseAsync("Hi");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Contains("from second", await response.Content.ReadAsStringAsync());
@@ -140,7 +141,7 @@ public sealed class MultiEndpointTests : IDisposable
     [Fact]
     public async Task ExplicitModel_DoesNotFailOverToDifferentModel()
     {
-        _first.Given(Upstream.ChatRequest("primary"))
+        _first.Given(Upstream.ResponseRequest("primary"))
             .RespondWith(Response.Create().WithStatusCode(429)
                 .WithHeader("Content-Type", "application/json")
                 .WithBody("""{"error":{"message":"limited"}}"""));
@@ -150,12 +151,12 @@ public sealed class MultiEndpointTests : IDisposable
             new("first", _first, [new("primary", Model: "requested-model")]),
             new("second", _second, [new("unrelated", Model: "other-model")]),
         ], s => s["Relay:MaxQueueWaitSeconds"] = "0");
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
-        using HttpResponseMessage response = await client.PostAsJsonAsync("/v1/chat/completions", new
+        using HttpResponseMessage response = await client.PostAsJsonAsync("/v1/responses", new
         {
             model = "requested-model",
-            messages = new[] { new { role = "user", content = "Hi" } },
+            input = "Hi",
         });
 
         Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
@@ -166,8 +167,8 @@ public sealed class MultiEndpointTests : IDisposable
     [Fact]
     public async Task StreamFailureAfterFirstChunk_DoesNotSwitchEndpoints()
     {
-        string incomplete = StreamBody[..StreamBody.IndexOf("data: [DONE]", StringComparison.Ordinal)];
-        _first.Given(Upstream.ChatRequest("shared"))
+        string incomplete = StreamBody[..^TerminalEvent.Length];
+        _first.Given(Upstream.ResponseRequest("shared"))
             .RespondWith(Response.Create().WithStatusCode(200)
                 .WithHeader("Content-Type", "text/event-stream").WithBody(incomplete));
         _second.RespondOk("shared");
@@ -176,14 +177,14 @@ public sealed class MultiEndpointTests : IDisposable
             new("first", _first, [new("shared", Priority: 1)]),
             new("second", _second, [new("shared", Priority: 2)]),
         ]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
         await Assert.ThrowsAsync<HttpRequestException>(async () =>
         {
-            using HttpResponseMessage response = await client.PostAsJsonAsync("/v1/chat/completions", new
+            using HttpResponseMessage response = await client.PostAsJsonAsync("/v1/responses", new
             {
                 model = "auto",
-                messages = new[] { new { role = "user", content = "Hi" } },
+                input = "Hi",
                 stream = true,
             });
             await response.Content.ReadAsStringAsync();

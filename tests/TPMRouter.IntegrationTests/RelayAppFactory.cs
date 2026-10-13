@@ -88,7 +88,7 @@ public sealed class RelayAppFactory(IReadOnlyList<TestEndpoint> endpoints, Actio
         return client;
     }
 
-    public HttpClient CreateChatClient(string? apiKey = ClientKey)
+    public HttpClient CreateOpenAIClient(string? apiKey = ClientKey)
     {
         HttpClient client = CreateClient();
         if (apiKey is not null)
@@ -102,51 +102,54 @@ public sealed class RelayAppFactory(IReadOnlyList<TestEndpoint> endpoints, Actio
 
 internal static class Upstream
 {
-    public const string ChatPath = "/openai/v1/chat/completions";
+    public const string ResponsesPath = "/openai/v1/responses";
 
-    public static IRequestBuilder ChatRequest(string deployment) =>
-        Request.Create().WithPath(ChatPath).UsingPost().WithBody(new JsonPartialMatcher($$"""{ "model": "{{deployment}}" }"""));
+    public static IRequestBuilder ResponseRequest(string deployment) =>
+        Request.Create().WithPath(ResponsesPath).UsingPost().WithBody(new JsonPartialMatcher($$"""{ "model": "{{deployment}}" }"""));
 
     public static bool IsFor(this WireMock.Logging.ILogEntry entry, string deployment) =>
         entry.RequestMessage?.Body?.Contains($"\"model\":\"{deployment}\"") == true;
 
-    public static string Completion(string? content, string finishReason = "stop") =>
-        $$"""
-        {
-          "id": "chatcmpl-1",
-          "object": "chat.completion",
-          "created": 1700000000,
-          "model": "test-model",
-          "choices": [
-            { "index": 0, "message": { "role": "assistant", "content": {{(content is null ? "null" : $"\"{content}\"")}} }, "finish_reason": "{{finishReason}}" }
-          ],
-          "usage": { "prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15 }
-        }
-        """;
+    public static string ResponseBody(string? text, string status = "completed")
+    {
+        string output = text is null
+            ? ""
+            : $$"""{ "type": "message", "id": "msg-1", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "{{text}}", "annotations": [] }] }""";
+        return $$"""
+            {
+              "id": "resp-1",
+              "object": "response",
+              "created_at": 1700000000,
+              "status": "{{status}}",
+              "model": "test-model",
+              "output": [{{output}}],
+              "usage": { "input_tokens": 12, "output_tokens": 3, "total_tokens": 15 }
+            }
+            """;
+    }
 
     public static void RespondOk(this WireMockServer server, string deployment, string content = "hello", TimeSpan? delay = null)
     {
         IResponseBuilder response = Response.Create()
             .WithStatusCode(200)
             .WithHeader("Content-Type", "application/json")
-            .WithBody(Completion(content));
+            .WithBody(ResponseBody(content));
         if (delay is { } d)
         {
             response = response.WithDelay(d);
         }
 
-        server.Given(ChatRequest(deployment)).RespondWith(response);
+        server.Given(ResponseRequest(deployment)).RespondWith(response);
     }
 
-    public static Task<HttpResponseMessage> PostChatAsync(this HttpClient client, string text, string? systemPrompt = null, CancellationToken cancellationToken = default)
+    public static Task<HttpResponseMessage> PostResponseAsync(this HttpClient client, string text, string? instructions = null, CancellationToken cancellationToken = default)
     {
-        JsonArray messages = [];
-        if (systemPrompt is not null)
+        JsonObject body = new() { ["model"] = "auto", ["input"] = text };
+        if (instructions is not null)
         {
-            messages.Add(new JsonObject { ["role"] = "system", ["content"] = systemPrompt });
+            body["instructions"] = instructions;
         }
 
-        messages.Add(new JsonObject { ["role"] = "user", ["content"] = text });
-        return client.PostAsJsonAsync("/v1/chat/completions", new JsonObject { ["model"] = "auto", ["messages"] = messages }, cancellationToken);
+        return client.PostAsJsonAsync("/v1/responses", body, cancellationToken);
     }
 }

@@ -64,9 +64,6 @@ app.UseMiddleware<ClientApiKeyMiddleware>();
 
 app.MapHealthChecks("/healthz");
 
-app.MapPost("/v1/chat/completions", ChatCompletionsEndpoint.HandleAsync)
-    .WithMetadata(new ApiKeyRequirement(ApiKeyScope.Client, OpenAICompatible: true));
-
 app.MapPost("/v1/responses", ResponsesEndpoint.HandleAsync)
     .WithMetadata(new ApiKeyRequirement(ApiKeyScope.Client, OpenAICompatible: true));
 

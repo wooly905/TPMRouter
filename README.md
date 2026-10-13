@@ -11,7 +11,7 @@ The animation uses illustrative effective token budgets. Each request reserves e
 ## How it works
 
 1. The router validates the client API key and request format.
-2. It estimates tokens for each eligible deployment using the `o200k_base` tokenizer. Responses includes full `input` history, instructions, tool definitions, and structured output schemas, plus the requested output limit (or the deployment's `MaxOutputTokens` when omitted). Chat Completions includes all messages and schemas, plus `n` times its output limit.
+2. It estimates tokens for each eligible deployment using the `o200k_base` tokenizer. Responses includes full `input` history, instructions, tool definitions, and structured output schemas, plus the requested output limit (or the deployment's `MaxOutputTokens` when omitted).
 3. It selects a deployment from those that are not in cooldown and have enough TPM and RPM left in the last 60 seconds:
    - lowest `Priority` value first, compared globally across endpoints (values may repeat),
    - then highest remaining ratio (`min(remaining TPM %, remaining RPM %)` when a local RPM limit is configured; otherwise remaining TPM %),
@@ -48,7 +48,7 @@ Settings live under the `Relay` section of `src/TPMRouter.Api/appsettings.json`.
 | `Endpoints[].Id` | Required, unique, stable endpoint ID used in budget keys, status, logs, and metrics. |
 | `Endpoints[].Endpoint` | Unique HTTP/HTTPS resource root URI; the router appends `/openai/v1/`. Do not include an API path, query, or fragment. |
 | `Endpoints[].ApiKey` | API key for this Azure OpenAI resource. **Secret.** |
-| `ClientApiKey` | Client key for Responses and Chat Completions (Bearer). **Secret.** |
+| `ClientApiKey` | Client key for Responses (Bearer). **Secret.** |
 | `AdminApiKey` | Key required for `GET /relay/status`. **Secret.** |
 | `SafetyFactor` | Fraction of TPM/RPM the relay may use (default `0.9`). |
 | `MaxQueueWaitSeconds` | Queue-wait cutoff measured from the start of routing, also constrained by the request deadline (default `30`). |
@@ -167,19 +167,19 @@ The default `http` launch profile uses `http://localhost:5042`. The `https` prof
 
 The status page links to **使用量歷史** (`/usage-history.html`). Enter the existing `Relay:AdminApiKey` to load records. The page defaults to the last seven calendar days including today, supports a custom inclusive date range in the browser's local time zone, and displays 50 records per page, newest first.
 
-Requests to both inference endpoints are recorded in SQLite, including authentication failures, validation errors, and partial streaming responses. Each record contains the request's UTC timestamp, connected source IP, source text, complete tool definitions, returned tool calls with arguments, actual input/output token counts, and output text. Streaming Chat Completions requests ask upstream to include usage; missing upstream counts are stored as `NULL`, rather than estimated. Function calls represent calls requested by the model; the router does not execute tools. API keys and request headers are not recorded.
+Requests to the inference endpoint are recorded in SQLite, including authentication failures, validation errors, and partial streaming responses. Each record contains the request's UTC timestamp, connected source IP, source text, complete tool definitions, returned tool calls with arguments, actual input/output token counts, and output text. Missing upstream counts are stored as `NULL`, rather than estimated. Function calls represent calls requested by the model; the router does not execute tools. API keys and request headers are not recorded.
 
 The database is created at `data/usage-history.db` relative to the API content root, outside `wwwroot`, and uses WAL. Override `UsageHistory:DatabasePath` (environment variable `UsageHistory__DatabasePath`) to place it on persistent storage. Seven days is a display filter; older records remain in the database. SQLite write failures are logged without replacing the inference response.
 
 `GET /relay/usage-history` requires `X-Api-Key: <admin-key>` and accepts optional ISO 8601 `start` and `end` timestamps plus a positive `page`. The start is inclusive and the end exclusive; omitted timestamps default to the last seven days. The JSON response contains `items`, `totalCount`, `page`, and `pageSize`. The browser keeps the entered key only in the current page.
 
-Responses and Chat Completions require `Authorization: Bearer <client-key>`. `/relay/status` requires `X-Api-Key: <admin-key>`.
+Responses requests require `Authorization: Bearer <client-key>`. `/relay/status` requires `X-Api-Key: <admin-key>`.
 
-The inference API exposes `POST /v1/responses` and `POST /v1/chat/completions`. The former `POST /relay` endpoint has been removed and returns `404`.
+The inference API exposes `POST /v1/responses`. The former `POST /relay` and `POST /v1/chat/completions` endpoints have been removed and return `404`.
 
 ### `POST /v1/responses`
 
-Use the [Responses API format](https://developers.openai.com/api/docs/guides/migrate-to-responses) for reasoning and function calling. No `api-version` query parameter is required. For `gpt-6.1-sol`, tool calling requires Responses; Chat Completions tool calling and `reasoning_effort: "none"` are unsupported, as documented in the [model guide](https://developers.openai.com/api/docs/models/gpt-6.1-sol).
+Use the [Responses API format](https://developers.openai.com/api/docs/guides/migrate-to-responses) for reasoning and function calling. No `api-version` query parameter is required. For `gpt-6.1-sol`, `reasoning_effort: "none"` is unsupported, as documented in the [model guide](https://developers.openai.com/api/docs/models/gpt-6.1-sol).
 
 ```bash
 curl "http://localhost:5042/v1/responses" \
@@ -188,15 +188,15 @@ curl "http://localhost:5042/v1/responses" \
   -d '{"model":"auto","input":[{"role":"user","content":"Look up the weather in Taipei."}],"reasoning":{"effort":"medium"},"max_output_tokens":2000,"store":false,"include":["reasoning.encrypted_content"],"tools":[{"type":"function","name":"get_weather","description":"Get current weather for a city.","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false},"strict":true}],"tool_choice":"auto"}'
 ```
 
-`model` and `input` are required. `input` accepts a text string or a non-empty array of input items, including text messages, reasoning items, `function_call`, and `function_call_output`. Image, audio, and file content parts are unsupported. Use `max_output_tokens` and `reasoning: {"effort": "medium"}` instead of Chat Completions fields. Function tools use top-level `name`, `parameters`, and `strict`, without the Chat Completions `function` wrapper. Remaining options are forwarded unchanged; the selected upstream deployment must support Responses and the requested options.
+`model` and `input` are required. `input` accepts a text string or a non-empty array of input items, including text messages, reasoning items, `function_call`, and `function_call_output`. Image, audio, and file content parts are unsupported. Use `max_output_tokens` and `reasoning: {"effort": "medium"}`; Chat Completions fields such as `messages`, `max_tokens`, `max_completion_tokens`, `reasoning_effort`, and `n` return `400`. Function tools use top-level `name`, `parameters`, and `strict`. Remaining options are forwarded unchanged; the selected upstream deployment must support Responses and the requested options.
 
-The router uses the same global priorities, rolling TPM/RPM budgets, cooldowns, and failover as Chat Completions. Both APIs share each deployment's budget. It replaces `model` with the selected deployment name and supplies `max_output_tokens` from `MaxOutputTokens` when omitted. An explicit output limit excludes deployments whose cap is smaller; the limit is never silently reduced. Estimates include instructions, all input items and tool results, tools, and `text` output schemas.
+The router uses global priorities, rolling TPM/RPM budgets, cooldowns, and failover. It replaces `model` with the selected deployment name and supplies `max_output_tokens` from `MaxOutputTokens` when omitted. An explicit output limit excludes deployments whose cap is smaller; the limit is never silently reduced. Estimates include instructions, all input items and tool results, tools, and `text` output schemas.
 
 The complete upstream response is preserved, including `output`, function arguments, reasoning items, usage, and response status. To continue a function call, execute each returned `output` item whose `type` is `function_call` in the client. Append **all** returned output items to your existing input history, including reasoning items, then append `{"type":"function_call_output","call_id":"<returned-call-id>","output":"<tool-result>"}` for each call and send the full history to `/v1/responses` again with `model: "auto"`. With `store: false`, request `include: ["reasoning.encrypted_content"]` and preserve that content when replaying reasoning history.
 
 Each request must carry its full history so the router can estimate its token budget and route across endpoints. `previous_response_id`, `conversation`, stored `item_reference` inputs, and `background: true` return `400`. Retrieval and conversation-management endpoints are not exposed. Use synchronous requests or `stream: true`.
 
-Streaming preserves native Responses SSE events, including function argument deltas and `response.completed`, `response.incomplete`, or `response.failed`; it does not add the Chat Completions `[DONE]` marker. A missing terminal event, timeout, or cancellation aborts the stream after it starts, without switching deployments. Errors before streaming starts use the same OpenAI-compatible error format and status codes as Chat Completions.
+Streaming preserves native Responses SSE events, including function argument deltas and `response.completed`, `response.incomplete`, or `response.failed`. A missing terminal event, timeout, or cancellation aborts the stream after it starts, without switching deployments. Errors before streaming starts use the OpenAI-compatible error format and status codes below.
 
 OpenAI SDK clients can set their base URL to `https://<router-host>/v1/` and use `ClientApiKey`. For the pinned OpenAI .NET SDK:
 
@@ -214,42 +214,6 @@ CreateResponseOptions options = new() { Model = "auto", StoredOutputEnabled = fa
 options.InputItems.Add(ResponseItem.CreateUserMessageItem("Hello"));
 ResponseResult response = await client.CreateResponseAsync(options);
 Console.WriteLine(response.GetOutputText());
-```
-
-### `POST /v1/chat/completions`
-
-This endpoint follows the [OpenAI Chat Completions request and response format](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create). No `api-version` query parameter is required.
-
-```bash
-curl "http://localhost:5042/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <client-key>" \
-  -d '{"model":"auto","messages":[{"role":"developer","content":"You are helpful."},{"role":"user","content":"Hello"}],"max_completion_tokens":200}'
-```
-
-Both `model` and a non-empty `messages` array are required, with `Content-Type: application/json`. Supported roles are `system`, `developer`, `user`, `assistant`, `tool`, and the legacy `function` role. The default is one choice (`n: 1`) and a non-streaming response (`stream: false`); `n` and any supplied token limit must be positive integers.
-
-The endpoint supports text strings and text content parts, assistant refusal parts, multi-turn conversations, tool calls and tool results, structured output, multiple choices, and streaming. Assistant content may be omitted or null when a tool call, function call, or refusal is present. Image, audio, and file content parts are rejected with `400`; audio output is also unsupported. Remaining options are forwarded unchanged, and support depends on the selected upstream model. A non-retryable upstream parameter error is returned to the client without trying another model.
-
-The router forwards the request JSON, replacing `model` with the selected deployment name. If neither `max_tokens` nor `max_completion_tokens` is provided, it supplies the deployment's configured `MaxOutputTokens` as `max_completion_tokens`. Specify at most one token-limit field. An explicit limit above a deployment's configured cap excludes that deployment; if no eligible deployment supports the limit, the request returns `400`. Limits are never silently reduced.
-
-The complete upstream response is preserved, including `id`, `object`, `created`, `model`, all `choices`, nullable content, `tool_calls`, `finish_reason`, usage details, and additional response fields. The response `model` is the upstream model, not the `auto` alias.
-
-For streaming, set `stream: true`. The response uses `text/event-stream`, preserving upstream chunks and `data: [DONE]`. Set `stream_options: {"include_usage": true}` to request the final usage chunk. Once streaming starts, its HTTP status remains `200`; cancellation, timeout, or a stream ending before `[DONE]` closes the connection without switching deployments, appending a successful terminator, or writing a JSON error body. Failures before streaming starts use the error responses below.
-
-OpenAI SDK clients can set their base URL to `https://<router-host>/v1/` and use `ClientApiKey` as the API key. For example, with the OpenAI .NET SDK:
-
-```csharp
-using System.ClientModel;
-using OpenAI;
-using OpenAI.Chat;
-
-ChatClient client = new("auto", new ApiKeyCredential("<client-key>"), new OpenAIClientOptions
-{
-    Endpoint = new Uri("https://<router-host>/v1/"),
-});
-ChatCompletion completion = await client.CompleteChatAsync([new UserChatMessage("Hello")]);
-Console.WriteLine(completion.Content[0].Text);
 ```
 
 The router does not impose a JSON character-count limit. It estimates input and output tokens, then selects a deployment with enough remaining TPM and RPM according to global priority. If none has capacity now, it waits within `MaxQueueWaitSeconds` or returns `429` with `Retry-After`. If the estimate exceeds every eligible deployment's total usable TPM (`TokensPerMinute × SafetyFactor`), it returns `413` because no deployment can fit the request even with an empty rolling window.

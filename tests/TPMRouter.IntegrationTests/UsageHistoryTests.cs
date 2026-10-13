@@ -19,12 +19,12 @@ public sealed class UsageHistoryTests : IDisposable
     public void Dispose() => _upstream.Stop();
 
     [Fact]
-    public async Task ChatRequest_PersistsUsageAndSurvivesStoreRecreation()
+    public async Task ResponsesRequest_PersistsUsageAndSurvivesStoreRecreation()
     {
         _upstream.RespondOk("dep-a", "你好");
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
-        using HttpClient client = app.CreateChatClient();
-        using HttpResponseMessage response = await client.PostChatAsync("台北天氣？");
+        using HttpClient client = app.CreateOpenAIClient();
+        using HttpResponseMessage response = await client.PostResponseAsync("台北天氣？");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         UsageHistoryStore reopened = new(app.Services.GetRequiredService<IWebHostEnvironment>(),
@@ -37,29 +37,23 @@ public sealed class UsageHistoryTests : IDisposable
         Assert.Equal(3, record.OutputTokenSize);
     }
 
-    [Theory]
-    [InlineData("/v1/chat/completions", "{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}],\"stream\":true}",
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3}}\n\ndata: [DONE]\n\n")]
-    [InlineData("/v1/responses", "{\"model\":\"auto\",\"input\":\"Hi\",\"stream\":true}",
-        "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"hello\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}],\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}}\n\n")]
-    public async Task StreamingRequest_PreservesSseAndRecordsActualUsage(string path, string body, string stream)
+    [Fact]
+    public async Task StreamingRequest_PreservesSseAndRecordsActualUsage()
     {
-        _upstream.Given(Request.Create().WithPath($"/openai{path}").UsingPost())
+        const string stream = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"hello\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}],\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}}\n\n";
+        _upstream.Given(Request.Create().WithPath(Upstream.ResponsesPath).UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "text/event-stream").WithBody(stream));
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
-        using HttpResponseMessage response = await client.PostAsync(path, new StringContent(body, Encoding.UTF8, "application/json"));
+        using HttpResponseMessage response = await client.PostAsync("/v1/responses",
+            new StringContent("""{"model":"auto","input":"Hi","stream":true}""", Encoding.UTF8, "application/json"));
 
         Assert.Equal(stream, await response.Content.ReadAsStringAsync());
         UsageRecord record = Assert.Single(ReadHistory(app).Items);
         Assert.Equal("hello", record.OutputText);
         Assert.Equal(12, record.InputTokenSize);
         Assert.Equal(3, record.OutputTokenSize);
-        if (path == "/v1/chat/completions")
-        {
-            Assert.Contains("\"include_usage\":true", _upstream.LogEntries.Single().RequestMessage!.Body!);
-        }
     }
 
     [Fact]
@@ -72,10 +66,10 @@ public sealed class UsageHistoryTests : IDisposable
             {"id":"resp-1","output":[{"type":"function_call","call_id":"call-1","name":"search","arguments":"{}"}],
              "usage":{"input_tokens":20,"output_tokens":5}}
             """;
-        _upstream.Given(Request.Create().WithPath("/openai/v1/responses").UsingPost())
+        _upstream.Given(Request.Create().WithPath(Upstream.ResponsesPath).UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/json").WithBody(completion));
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
         using HttpResponseMessage response = await client.PostAsync("/v1/responses", new StringContent(body, Encoding.UTF8, "application/json"));
 
@@ -93,11 +87,11 @@ public sealed class UsageHistoryTests : IDisposable
     {
         _upstream.RespondOk("dep-a");
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
         await Task.WhenAll(Enumerable.Range(0, 12).Select(async i =>
         {
-            using HttpResponseMessage response = await client.PostChatAsync($"request-{i}");
+            using HttpResponseMessage response = await client.PostResponseAsync($"request-{i}");
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         }));
 
@@ -110,7 +104,7 @@ public sealed class UsageHistoryTests : IDisposable
     public async Task InvalidAuthorizedRequest_RecordsErrorWithoutInventedUsage()
     {
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
-        using HttpClient client = app.CreateChatClient();
+        using HttpClient client = app.CreateOpenAIClient();
 
         using HttpResponseMessage response = await client.PostAsync("/v1/responses", new StringContent("not-json", Encoding.UTF8, "application/json"));
 
@@ -141,9 +135,9 @@ public sealed class UsageHistoryTests : IDisposable
     public async Task UnauthorizedInferenceRequest_RecordsErrorWithoutCallingUpstream()
     {
         await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
-        using HttpClient client = app.CreateChatClient(null);
+        using HttpClient client = app.CreateOpenAIClient(null);
 
-        using HttpResponseMessage response = await client.PostChatAsync("Hi");
+        using HttpResponseMessage response = await client.PostResponseAsync("Hi");
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         UsageRecord record = Assert.Single(ReadHistory(app).Items);

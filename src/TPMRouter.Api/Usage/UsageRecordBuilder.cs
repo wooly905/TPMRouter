@@ -24,8 +24,8 @@ public sealed class UsageRecordBuilder
     public UsageRecordBuilder(string request)
     {
         JsonObject? body = ParseObject(request);
-        _sourceText = body is null ? request : JoinText(body["instructions"], body["messages"], body["input"]);
-        _tools = (JsonArray?)((body?["tools"] as JsonArray ?? body?["functions"] as JsonArray)?.DeepClone()) ?? [];
+        _sourceText = body is null ? request : JoinText(body["instructions"], body["input"]);
+        _tools = (JsonArray?)((body?["tools"] as JsonArray)?.DeepClone()) ?? [];
     }
 
     public void ReadResponse(string response, bool streaming)
@@ -86,38 +86,8 @@ public sealed class UsageRecordBuilder
 
         if (payload["usage"] is JsonObject usage)
         {
-            _inputTokens = ReadTokenCount(usage["input_tokens"] ?? usage["prompt_tokens"]) ?? _inputTokens;
-            _outputTokens = ReadTokenCount(usage["output_tokens"] ?? usage["completion_tokens"]) ?? _outputTokens;
-        }
-
-        if (payload["choices"] is JsonArray choices)
-        {
-            foreach (JsonObject choice in choices.OfType<JsonObject>())
-            {
-                string key = choice["index"]?.ToJsonString() ?? "0";
-                JsonObject? message = (choice["message"] ?? choice["delta"]) as JsonObject;
-
-                if (message is null)
-                {
-                    continue;
-                }
-
-                _text[key] = _text.GetValueOrDefault(key, "") + JoinText(message["content"], message["refusal"]);
-
-                if (message["tool_calls"] is JsonArray calls)
-                {
-                    foreach (JsonObject call in calls.OfType<JsonObject>())
-                    {
-                        string toolKey = $"{key}:{call["index"]?.ToJsonString() ?? GetString(call["id"])}";
-                        ReadChatTool(toolKey, call["function"] as JsonObject);
-                    }
-                }
-
-                if (message["function_call"] is JsonObject function)
-                {
-                    ReadChatTool($"{key}:function", function);
-                }
-            }
+            _inputTokens = ReadTokenCount(usage["input_tokens"]) ?? _inputTokens;
+            _outputTokens = ReadTokenCount(usage["output_tokens"]) ?? _outputTokens;
         }
 
         if (payload["output"] is JsonArray output)
@@ -180,23 +150,6 @@ public sealed class UsageRecordBuilder
         {
             _invoked[key] = (JsonObject)item.DeepClone();
         }
-    }
-
-    private void ReadChatTool(string key, JsonObject? function)
-    {
-        if (function is null)
-        {
-            return;
-        }
-
-        if (!_invoked.TryGetValue(key, out JsonObject? tool))
-        {
-            tool = new JsonObject { ["type"] = "function_call", ["name"] = "", ["arguments"] = "" };
-            _invoked[key] = tool;
-        }
-
-        tool["name"] = GetString(tool["name"]) + GetString(function["name"]);
-        tool["arguments"] = GetString(tool["arguments"]) + GetString(function["arguments"]);
     }
 
     private static string JoinText(params JsonNode?[] nodes) => string.Join("\n", nodes.SelectMany(ReadText));
