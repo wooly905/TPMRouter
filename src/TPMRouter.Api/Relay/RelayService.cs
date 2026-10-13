@@ -47,6 +47,15 @@ public sealed class RelayService(IOptions<RelayOptions> options,
             return new RelayOutcome(404, Error: "The requested model is not available.", ErrorParam: "model", ErrorCode: "model_not_found");
         }
 
+        if (request.HasImages)
+        {
+            candidates = candidates.Where(d => d.Deployment.SupportsVision).ToList();
+            if (candidates.Count == 0)
+            {
+                return new RelayOutcome(400, Error: "The requested model does not support image input.", ErrorParam: "model", ErrorCode: "unsupported_value");
+            }
+        }
+
         candidates = candidates.Where(d => maxOutputTokens is null || maxOutputTokens <= d.Deployment.MaxOutputTokens).ToList();
         if (candidates.Count == 0)
         {

@@ -50,4 +50,6 @@ public sealed class DeploymentOptions
     public int MaxOutputTokens { get; set; }
 
     public int Priority { get; set; }
+
+    public bool SupportsVision { get; set; }
 }

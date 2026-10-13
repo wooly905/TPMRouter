@@ -87,6 +87,45 @@ public class RelayServiceTests
         Assert.Single(upstream.Calls);
     }
 
+    [Fact]
+    public async Task RelayResponseAsync_AutoImageRequest_SkipsDeploymentsWithoutVision()
+    {
+        var options = TestData.Options(0.9, TestData.Deployment("text", 100_000, 0, priority: 1),
+                                       TestData.Deployment("vision", 100_000, 0, priority: 2, supportsVision: true));
+        var upstream = new FakeUpstreamClient(_ => FakeUpstreamClient.Ok());
+        RelayService service = TestData.Service(options, upstream);
+
+        RelayOutcome outcome = await RelayImageAsync(service, "auto");
+
+        Assert.Equal(StatusCodes.Status200OK, outcome.StatusCode);
+        Assert.Equal(["test/vision"], upstream.Calls);
+    }
+
+    [Fact]
+    public async Task RelayResponseAsync_ImageRequestForModelWithoutVision_Returns400WithoutUpstreamCall()
+    {
+        var options = TestData.Options(0.9, TestData.Deployment("text", 100_000, 0, priority: 1),
+                                       TestData.Deployment("vision", 100_000, 0, priority: 2, supportsVision: true));
+        var upstream = new FakeUpstreamClient(_ => FakeUpstreamClient.Ok());
+        RelayService service = TestData.Service(options, upstream);
+
+        RelayOutcome outcome = await RelayImageAsync(service, "text");
+
+        Assert.Equal(StatusCodes.Status400BadRequest, outcome.StatusCode);
+        Assert.Equal("model", outcome.ErrorParam);
+        Assert.Empty(upstream.Calls);
+    }
+
+    private static Task<RelayOutcome> RelayImageAsync(RelayService service, string model)
+    {
+        RelayOutcome? invalid = ResponsesRequest.Validate(JsonNode.Parse($$"""
+            {"model":"{{model}}","input":[{"role":"user","content":[
+                {"type":"input_text","text":"Describe."},{"type":"input_image","image_url":"data:image/jpeg;base64,/9j/AAAA"}]}]}
+            """), out ResponsesRequest? request);
+        Assert.Null(invalid);
+        return service.RelayResponseAsync(request!, (_, _) => Task.CompletedTask, () => false, CancellationToken.None);
+    }
+
     private static Task<RelayOutcome> RelayAsync(RelayService service, string text)
     {
         RelayOutcome? invalid = ResponsesRequest.Validate(new JsonObject

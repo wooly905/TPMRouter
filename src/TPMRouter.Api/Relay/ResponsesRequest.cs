@@ -2,7 +2,7 @@ using System.Text.Json.Nodes;
 
 namespace TPMRouter.Api.Relay;
 
-public sealed record ResponsesRequest(JsonObject Body, string Model, bool Stream, int? MaxOutputTokens)
+public sealed record ResponsesRequest(JsonObject Body, string Model, bool Stream, int? MaxOutputTokens, bool HasImages = false)
 {
     public static RelayOutcome? Validate(JsonNode? body, out ResponsesRequest? request)
     {
@@ -40,6 +40,7 @@ public sealed record ResponsesRequest(JsonObject Body, string Model, bool Stream
             return Invalid("The 'input' field must be a text string or a non-empty array of input items.", "input");
         }
 
+        bool hasImages = false;
         if (json["input"] is JsonArray items)
         {
             for (int i = 0; i < items.Count; i++)
@@ -71,6 +72,8 @@ public sealed record ResponsesRequest(JsonObject Body, string Model, bool Stream
                         {
                             return Invalid("Send images in 'image_url' as a Base64 data URL (data:image/...).", $"input[{i}].content", "unsupported_value");
                         }
+
+                        hasImages |= type == "input_image";
                     }
                 }
             }
@@ -99,7 +102,7 @@ public sealed record ResponsesRequest(JsonObject Body, string Model, bool Stream
             maxOutputTokens = limit;
         }
 
-        request = new ResponsesRequest(json, model!, stream, maxOutputTokens);
+        request = new ResponsesRequest(json, model!, stream, maxOutputTokens, hasImages);
         return null;
     }
 

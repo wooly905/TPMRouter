@@ -49,7 +49,7 @@ public sealed class ResponsesRequestTests
         };
 
         Assert.Null(ResponsesRequest.Validate(body, out ResponsesRequest? request));
-        Assert.NotNull(request);
+        Assert.True(request!.HasImages);
     }
 
     [Fact]
@@ -70,5 +70,6 @@ public sealed class ResponsesRequestTests
         Assert.Equal("auto", request.Model);
         Assert.True(request.Stream);
         Assert.Equal(50, request.MaxOutputTokens);
+        Assert.False(request.HasImages);
     }
 }

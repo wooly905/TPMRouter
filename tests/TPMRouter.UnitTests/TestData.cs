@@ -13,8 +13,13 @@ namespace TPMRouter.UnitTests;
 
 internal static class TestData
 {
-    public static DeploymentOptions Deployment(string name, long tpm, int rpm, int maxOutputTokens = 100, int priority = 1) =>
-        new() { Name = name, Model = name, TokensPerMinute = tpm, RequestsPerMinute = rpm, MaxOutputTokens = maxOutputTokens, Priority = priority };
+    public static DeploymentOptions Deployment(string name,
+                                               long tpm,
+                                               int rpm,
+                                               int maxOutputTokens = 100,
+                                               int priority = 1,
+                                               bool supportsVision = false) =>
+        new() { Name = name, Model = name, TokensPerMinute = tpm, RequestsPerMinute = rpm, MaxOutputTokens = maxOutputTokens, Priority = priority, SupportsVision = supportsVision };
 
     public static DeploymentTarget Target(DeploymentOptions deployment, string endpointId = "test") => new(endpointId, deployment);
 
