@@ -79,8 +79,13 @@
                 <caption hidden>HTTP request／response 使用量紀錄</caption>
                 <thead>
                     <tr>
-                        <th scope="col">日期時間</th>
+                        <th scope="col">時間</th>
+                        <th scope="col">Chat ID</th>
+                        <th scope="col">Message ID</th>
                         <th scope="col">來源 IP</th>
+                        <th scope="col">Model</th>
+                        <th scope="col">Deployment</th>
+                        <th scope="col">Invoked type</th>
                         <th scope="col">來源文字</th>
                         <th scope="col">Tools list</th>
                         <th scope="col">Invoked tool</th>
@@ -89,7 +94,7 @@
                         <th scope="col">輸出文字</th>
                     </tr>
                 </thead>
-                <tbody id="records"><tr><td colspan="8">尚未查詢。</td></tr></tbody>
+                <tbody id="records"><tr><td colspan="13">尚未查詢。</td></tr></tbody>
             </table>
         </div>
         <div class="pagination">
@@ -163,10 +168,16 @@
             return textCell(JSON.stringify(tools, null, 2), names.join(', '));
         }
 
+        function idCell(id) {
+            const cell = element('td', id ? id.slice(0, 6) : '—', 'ip');
+            if (id) cell.title = id;
+            return cell;
+        }
+
         function emptyRow(text) {
             const row = element('tr');
             const cell = element('td', text);
-            cell.colSpan = 8;
+            cell.colSpan = 13;
             row.append(cell);
             records.replaceChildren(row);
         }
@@ -176,7 +187,11 @@
             for (const record of data.items) {
                 const row = element('tr');
                 row.append(element('td', new Date(record.dateTime).toLocaleString('zh-TW', { hour12: false }), 'datetime'),
+                    idCell(record.chatId), idCell(record.messageId),
                     element('td', record.sourceIp || '未提供', 'ip'),
+                    element('td', record.model || '—', 'ip'),
+                    element('td', record.deployment || '—', 'ip'),
+                    element('td', record.invokedType || '—', 'ip'),
                     textCell(record.sourceText), toolsCell(record.toolsList), toolsCell(record.invokedTool),
                     element('td', record.inputTokenSize === null ? '未提供' : numbers.format(record.inputTokenSize), 'tokens'),
                     element('td', record.outputTokenSize === null ? '未提供' : numbers.format(record.outputTokenSize), 'tokens'),

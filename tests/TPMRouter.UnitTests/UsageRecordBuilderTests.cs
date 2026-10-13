@@ -24,13 +24,15 @@ public sealed class UsageRecordBuilderTests
             data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{}"}
 
             event: response.completed
-            data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"hello"}]},{"type":"function_call","name":"search","arguments":"{}","call_id":"call-1"}],"usage":{"input_tokens":17,"output_tokens":9}}}
+            data: {"type":"response.completed","response":{"model":"gpt-4.1","output":[{"type":"message","content":[{"type":"output_text","text":"hello"}]},{"type":"function_call","name":"search","arguments":"{}","call_id":"call-1"}],"usage":{"input_tokens":17,"output_tokens":9}}}
 
             """, true);
 
         UsageRecord record = builder.Build(DateTimeOffset.UnixEpoch, "");
 
         Assert.Equal("Use tools.\nHi\nsunny", record.SourceText);
+        Assert.Equal("tool", record.InvokedType);
+        Assert.Equal("gpt-4.1", record.Model);
         Assert.Equal("hello", record.OutputText);
         Assert.Single(record.InvokedTool);
         Assert.Equal("{}", record.InvokedTool[0]!["arguments"]!.GetValue<string>());
@@ -55,6 +57,7 @@ public sealed class UsageRecordBuilderTests
         UsageRecord record = builder.Build(DateTimeOffset.UnixEpoch, "");
 
         Assert.Equal("partial", record.OutputText);
+        Assert.Equal("user", record.InvokedType);
         Assert.Equal("{\"q\":\"hello\"}", record.InvokedTool[0]!["arguments"]!.GetValue<string>());
         Assert.Null(record.InputTokenSize);
         Assert.Null(record.OutputTokenSize);
@@ -94,13 +97,31 @@ public sealed class UsageRecordBuilderTests
     {
         UsageRecordBuilder builder = new("""{"input":"Hi"}""");
         builder.ReadResponse("""
-            {"output":[{"type":"message","content":[{"type":"refusal","refusal":"Cannot help."}]}],
+            {"model":"gpt-4.1-mini","output":[{"type":"message","content":[{"type":"refusal","refusal":"Cannot help."}]}],
              "usage":{"input_tokens":1,"output_tokens":0}}
             """, false);
 
         UsageRecord record = builder.Build(DateTimeOffset.UnixEpoch, "");
 
         Assert.Equal("Cannot help.", record.OutputText);
+        Assert.Equal("gpt-4.1-mini", record.Model);
         Assert.Equal(0, record.OutputTokenSize);
+    }
+
+    [Fact]
+    public void ChatId_StaysStableAcrossTurnsAndMessageIdIsUnique()
+    {
+        UsageRecord first = new UsageRecordBuilder("""{"input":"Hi"}""").Build(DateTimeOffset.UnixEpoch, "10.0.0.1");
+        UsageRecord next = new UsageRecordBuilder("""
+            {"input":[{"role":"user","content":[{"type":"input_text","text":"Hi"}]},
+                      {"role":"assistant","content":"Hello"},{"role":"user","content":"Weather?"}]}
+            """).Build(DateTimeOffset.UnixEpoch, "10.0.0.1");
+        UsageRecord otherUser = new UsageRecordBuilder("""{"input":"Hi"}""").Build(DateTimeOffset.UnixEpoch, "10.0.0.2");
+
+        Assert.True(Guid.TryParse(first.ChatId, out _));
+        Assert.Equal(first.ChatId, next.ChatId);
+        Assert.NotEqual(first.ChatId, otherUser.ChatId);
+        Assert.True(Guid.TryParse(first.MessageId, out _));
+        Assert.NotEqual(first.MessageId, next.MessageId);
     }
 }

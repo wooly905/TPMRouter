@@ -25,7 +25,12 @@ public sealed class UsageHistoryStore
             CREATE TABLE IF NOT EXISTS usage_history (
                 id INTEGER PRIMARY KEY,
                 datetime_utc INTEGER NOT NULL,
+                chat_id TEXT NOT NULL DEFAULT '',
+                message_id TEXT NOT NULL DEFAULT '',
                 source_ip TEXT NOT NULL,
+                model TEXT NOT NULL DEFAULT '',
+                deployment TEXT NOT NULL DEFAULT '',
+                invoked_type TEXT NOT NULL DEFAULT '',
                 source_text TEXT NOT NULL,
                 tools_list TEXT NOT NULL,
                 invoked_tool TEXT NOT NULL,
@@ -36,6 +41,17 @@ public sealed class UsageHistoryStore
             CREATE INDEX IF NOT EXISTS ix_usage_history_datetime ON usage_history(datetime_utc DESC, id DESC);
             """;
         command.ExecuteNonQuery();
+
+        // Databases created before these columns existed need them added in place.
+        foreach (string column in new[] { "chat_id", "message_id", "model", "deployment", "invoked_type" })
+        {
+            command.CommandText = $"SELECT COUNT(*) FROM pragma_table_info('usage_history') WHERE name = '{column}';";
+            if ((long)command.ExecuteScalar()! == 0)
+            {
+                command.CommandText = $"ALTER TABLE usage_history ADD COLUMN {column} TEXT NOT NULL DEFAULT '';";
+                command.ExecuteNonQuery();
+            }
+        }
     }
 
     public void Save(UsageRecord record)
@@ -45,12 +61,17 @@ public sealed class UsageHistoryStore
         using SqliteCommand command = connection.CreateCommand();
         command.CommandText = """
             INSERT INTO usage_history
-                (datetime_utc, source_ip, source_text, tools_list, invoked_tool,
+                (datetime_utc, chat_id, message_id, source_ip, model, deployment, invoked_type, source_text, tools_list, invoked_tool,
                  input_token_size, output_token_size, output_text)
-            VALUES ($datetime, $ip, $source, $tools, $invoked, $input, $output, $text);
+            VALUES ($datetime, $chatId, $messageId, $ip, $model, $deployment, $invokedType, $source, $tools, $invoked, $input, $output, $text);
             """;
         command.Parameters.AddWithValue("$datetime", record.DateTime.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$chatId", record.ChatId);
+        command.Parameters.AddWithValue("$messageId", record.MessageId);
         command.Parameters.AddWithValue("$ip", record.SourceIp);
+        command.Parameters.AddWithValue("$model", record.Model);
+        command.Parameters.AddWithValue("$deployment", record.Deployment);
+        command.Parameters.AddWithValue("$invokedType", record.InvokedType);
         command.Parameters.AddWithValue("$source", record.SourceText);
         command.Parameters.AddWithValue("$tools", record.ToolsList.ToJsonString());
         command.Parameters.AddWithValue("$invoked", record.InvokedTool.ToJsonString());
@@ -74,7 +95,7 @@ public sealed class UsageHistoryStore
         command.Parameters.AddWithValue("$end", end.ToUnixTimeMilliseconds());
         long totalCount = (long)command.ExecuteScalar()!;
         command.CommandText = """
-            SELECT datetime_utc, source_ip, source_text, tools_list, invoked_tool,
+            SELECT datetime_utc, chat_id, message_id, source_ip, model, deployment, invoked_type, source_text, tools_list, invoked_tool,
                    input_token_size, output_token_size, output_text
             FROM usage_history WHERE datetime_utc >= $start AND datetime_utc < $end
             ORDER BY datetime_utc DESC, id DESC LIMIT $limit OFFSET $offset;
@@ -89,11 +110,16 @@ public sealed class UsageHistoryStore
                 items.Add(new UsageRecord(DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(0)),
                                           reader.GetString(1),
                                           reader.GetString(2),
-                                          (JsonArray)JsonNode.Parse(reader.GetString(3))!,
-                                          (JsonArray)JsonNode.Parse(reader.GetString(4))!,
-                                          reader.IsDBNull(5) ? null : reader.GetInt64(5),
-                                          reader.IsDBNull(6) ? null : reader.GetInt64(6),
-                                          reader.GetString(7)));
+                                          reader.GetString(3),
+                                          reader.GetString(4),
+                                          reader.GetString(5),
+                                          reader.GetString(6),
+                                          reader.GetString(7),
+                                          (JsonArray)JsonNode.Parse(reader.GetString(8))!,
+                                          (JsonArray)JsonNode.Parse(reader.GetString(9))!,
+                                          reader.IsDBNull(10) ? null : reader.GetInt64(10),
+                                          reader.IsDBNull(11) ? null : reader.GetInt64(11),
+                                          reader.GetString(12)));
             }
         }
 

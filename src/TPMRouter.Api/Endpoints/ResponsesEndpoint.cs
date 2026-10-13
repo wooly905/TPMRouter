@@ -37,7 +37,9 @@ public static class ResponsesEndpoint
                                                                 (response, token) => CopyStreamAsync(response, context, streamedUsage, token),
                                                                 () => context.Response.HasStarted,
                                                                 context.RequestAborted,
-                                                                streamedUsage);
+                                                                streamedUsage,
+                                                                target => context.Items[UsageHistoryMiddleware.DeploymentKey] =
+                                                                    $"{target.EndpointId}/{target.Deployment.Name}");
         if (context.Response.HasStarted)
         {
             if (outcome.StatusCode != StatusCodes.Status200OK)

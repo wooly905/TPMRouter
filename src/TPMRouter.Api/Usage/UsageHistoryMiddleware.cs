@@ -6,6 +6,8 @@ namespace TPMRouter.Api.Usage;
 
 public sealed class UsageHistoryMiddleware(RequestDelegate next, ILogger<UsageHistoryMiddleware> logger)
 {
+    public static readonly object DeploymentKey = new();
+
     public async Task InvokeAsync(HttpContext context,
                                   UsageHistoryStore store,
                                   TimeProvider timeProvider)
@@ -42,7 +44,9 @@ public sealed class UsageHistoryMiddleware(RequestDelegate next, ILogger<UsageHi
             context.Response.Body = original;
             record.ReadResponse(Encoding.UTF8.GetString(captured.GetBuffer(), 0, (int)captured.Length),
                                 context.Response.ContentType?.StartsWith("text/event-stream", StringComparison.OrdinalIgnoreCase) == true);
-            UsageRecord usage = record.Build(timestamp, context.Connection.RemoteIpAddress?.ToString() ?? "");
+            UsageRecord usage = record.Build(timestamp,
+                                             context.Connection.RemoteIpAddress?.ToString() ?? "",
+                                             context.Items[DeploymentKey] as string ?? "");
             logger.LogInformation("Usage diagnostic completed: HTTP status {StatusCode}, actual input {ActualInputTokens}, actual output {ActualOutputTokens}, actual total {ActualTotalTokens}.",
                                   context.Response.StatusCode,
                                   usage.InputTokenSize,

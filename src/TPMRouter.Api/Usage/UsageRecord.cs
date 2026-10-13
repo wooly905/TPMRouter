@@ -3,7 +3,12 @@ using System.Text.Json.Nodes;
 namespace TPMRouter.Api.Usage;
 
 public sealed record UsageRecord(DateTimeOffset DateTime,
+                                 string ChatId,
+                                 string MessageId,
                                  string SourceIp,
+                                 string Model,
+                                 string Deployment,
+                                 string InvokedType,
                                  string SourceText,
                                  JsonArray ToolsList,
                                  JsonArray InvokedTool,

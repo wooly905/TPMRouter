@@ -33,6 +33,7 @@ public sealed class UsageHistoryTests : IDisposable
         UsageRecord record = Assert.Single(history.Items);
         Assert.Equal("台北天氣？", record.SourceText);
         Assert.Equal("你好", record.OutputText);
+        Assert.Equal("test/dep-a", record.Deployment);
         Assert.Equal(12, record.InputTokenSize);
         Assert.Equal(3, record.OutputTokenSize);
     }
@@ -52,6 +53,7 @@ public sealed class UsageHistoryTests : IDisposable
         Assert.Equal(stream, await response.Content.ReadAsStringAsync());
         UsageRecord record = Assert.Single(ReadHistory(app).Items);
         Assert.Equal("hello", record.OutputText);
+        Assert.Equal("test/dep-a", record.Deployment);
         Assert.Equal(12, record.InputTokenSize);
         Assert.Equal(3, record.OutputTokenSize);
     }
@@ -220,5 +222,5 @@ public sealed class UsageHistoryTests : IDisposable
             .GetHistory(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1), 1, 50);
 
     private static UsageRecord Record(DateTimeOffset timestamp, string source) =>
-        new(timestamp, "192.0.2.1", source, [], [], null, null, "");
+        new(timestamp, "", "", "192.0.2.1", "", "", "user", source, [], [], null, null, "");
 }

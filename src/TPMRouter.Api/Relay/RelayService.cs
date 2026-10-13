@@ -34,7 +34,8 @@ public sealed class RelayService(IOptions<RelayOptions> options,
                                                        Func<PipelineResponse, CancellationToken, Task> onStream,
                                                        Func<bool> hasStarted,
                                                        CancellationToken requestAborted,
-                                                       UsageRecordBuilder? streamedUsage = null)
+                                                       UsageRecordBuilder? streamedUsage = null,
+                                                       Action<DeploymentTarget>? onSelected = null)
     {
         JsonObject requestBody = request.Body;
         string model = request.Model;
@@ -73,6 +74,7 @@ public sealed class RelayService(IOptions<RelayOptions> options,
         return await RelayCoreAsync(estimates, async (selected, token) =>
         {
             streamedUsage?.ResetUsage();
+            onSelected?.Invoke(selected);
             JsonObject body = (JsonObject)requestBody.DeepClone();
             body["model"] = selected.Deployment.Name;
 

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -7,11 +8,14 @@ namespace TPMRouter.Api.Usage;
 public sealed class UsageRecordBuilder
 {
     private readonly string _sourceText;
+    private readonly string _chatSeed;
+    private readonly string _invokedType;
     private readonly JsonArray _tools;
     private readonly Dictionary<string, string> _text = [];
     private readonly Dictionary<string, JsonObject> _invoked = [];
     private long? _inputTokens;
     private long? _outputTokens;
+    private string _model = "";
 
     public long? TotalTokens => _inputTokens + _outputTokens;
 
@@ -25,6 +29,21 @@ public sealed class UsageRecordBuilder
     {
         JsonObject? body = ParseObject(request);
         _sourceText = body is null ? request : JoinText(body["instructions"], body["input"]);
+        // Clients resend the full history each turn, so the first user message identifies the chat.
+        _chatSeed = body?["input"] switch
+        {
+            JsonValue value => GetString(value),
+            JsonArray items => items.OfType<JsonObject>().FirstOrDefault(item => GetString(item["role"]) == "user") is { } first
+                ? JoinText(first)
+                : "",
+            _ => "",
+        };
+        // A request whose latest input item is a tool result continues a tool call; otherwise the user started it.
+        _invokedType = body?["input"] is JsonArray { Count: > 0 } input
+                       && input[^1] is JsonObject last
+                       && GetString(last["type"]).EndsWith("_call_output", StringComparison.Ordinal)
+            ? "tool"
+            : "user";
         _tools = (JsonArray?)((body?["tools"] as JsonArray)?.DeepClone()) ?? [];
     }
 
@@ -61,15 +80,23 @@ public sealed class UsageRecordBuilder
         ReadEvent(data.ToString());
     }
 
-    public UsageRecord Build(DateTimeOffset timestamp, string sourceIp) =>
+    public UsageRecord Build(DateTimeOffset timestamp, string sourceIp, string deployment = "") =>
         new(timestamp,
+            ChatId(sourceIp),
+            Guid.NewGuid().ToString(),
             sourceIp,
+            _model,
+            deployment,
+            _invokedType,
             _sourceText,
             _tools,
             new JsonArray(_invoked.Values.Select(tool => (JsonNode)tool.DeepClone()).ToArray()),
             _inputTokens,
             _outputTokens,
             string.Join("\n", _text.Values));
+
+    private string ChatId(string sourceIp) =>
+        _chatSeed.Length == 0 ? "" : new Guid(SHA256.HashData(Encoding.UTF8.GetBytes($"{sourceIp}\n{_chatSeed}")).AsSpan(0, 16)).ToString();
 
     private void ReadEvent(string data)
     {
@@ -83,6 +110,11 @@ public sealed class UsageRecordBuilder
     {
         JsonObject? response = body["response"] as JsonObject;
         JsonObject payload = response ?? body;
+
+        if (GetString(payload["model"]) is { Length: > 0 } model)
+        {
+            _model = model;
+        }
 
         if (payload["usage"] is JsonObject usage)
         {
