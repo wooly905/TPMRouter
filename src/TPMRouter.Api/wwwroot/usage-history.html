@@ -85,6 +85,7 @@
                         <th scope="col">來源 IP</th>
                         <th scope="col">Deployment</th>
                         <th scope="col">Invoked type</th>
+                        <th scope="col">Input type</th>
                         <th scope="col">來源文字</th>
                         <th scope="col">Tools list</th>
                         <th scope="col">Invoked tool</th>
@@ -93,7 +94,7 @@
                         <th scope="col">輸出文字</th>
                     </tr>
                 </thead>
-                <tbody id="records"><tr><td colspan="12">尚未查詢。</td></tr></tbody>
+                <tbody id="records"><tr><td colspan="13">尚未查詢。</td></tr></tbody>
             </table>
         </div>
         <div class="pagination">
@@ -176,7 +177,7 @@
         function emptyRow(text) {
             const row = element('tr');
             const cell = element('td', text);
-            cell.colSpan = 12;
+            cell.colSpan = 13;
             row.append(cell);
             records.replaceChildren(row);
         }
@@ -190,6 +191,7 @@
                     element('td', record.sourceIp || '未提供', 'ip'),
                     element('td', record.deployment || '—', 'ip'),
                     element('td', record.invokedType || '—', 'ip'),
+                    element('td', record.inputType || '—', 'ip'),
                     textCell(record.sourceText), toolsCell(record.toolsList), toolsCell(record.invokedTool),
                     element('td', record.inputTokenSize === null ? '未提供' : numbers.format(record.inputTokenSize), 'tokens'),
                     element('td', record.outputTokenSize === null ? '未提供' : numbers.format(record.outputTokenSize), 'tokens'),

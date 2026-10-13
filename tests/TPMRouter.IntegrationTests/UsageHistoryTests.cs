@@ -222,5 +222,5 @@ public sealed class UsageHistoryTests : IDisposable
             .GetHistory(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1), 1, 50);
 
     private static UsageRecord Record(DateTimeOffset timestamp, string source) =>
-        new(timestamp, "", "", "192.0.2.1", "", "user", source, [], [], null, null, "");
+        new(timestamp, "", "", "192.0.2.1", "", "user", "text", source, [], [], null, null, "");
 }

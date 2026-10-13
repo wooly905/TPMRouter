@@ -20,7 +20,10 @@ public sealed class ResponsesRequestTests
     [InlineData("{\"model\":\"auto\",\"input\":\"Hi\",\"messages\":[]}", "messages")]
     [InlineData("{\"model\":\"auto\",\"input\":\"Hi\",\"max_completion_tokens\":10}", "max_completion_tokens")]
     [InlineData("{\"model\":\"auto\",\"input\":[{\"type\":\"item_reference\",\"id\":\"msg-1\"}]}", "input[0].type")]
+    [InlineData("{\"model\":\"auto\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_image\",\"file_id\":\"file-1\"}]}]}", "input[0].content")]
+    [InlineData("{\"model\":\"auto\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_image\",\"image_url\":\"http://example.invalid/image.png\"}]}]}", "input[0].content")]
     [InlineData("{\"model\":\"auto\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_image\",\"image_url\":\"https://example.invalid/image.png\"}]}]}", "input[0].content")]
+    [InlineData("{\"model\":\"auto\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_file\",\"file_id\":\"file-1\"}]}]}", "input[0].content")]
     public void Validate_InvalidOrUnroutableRequest_Returns400(string body, string param)
     {
         RelayOutcome? outcome = ResponsesRequest.Validate(JsonNode.Parse(body), out ResponsesRequest? request);
@@ -28,6 +31,25 @@ public sealed class ResponsesRequestTests
         Assert.Equal(400, outcome?.StatusCode);
         Assert.Equal(param, outcome?.ErrorParam);
         Assert.Null(request);
+    }
+
+    [Fact]
+    public void Validate_ImageDataUrlPart_IsAccepted()
+    {
+        const string url = "data:image/jpeg;base64,/9j/AAAA";
+        JsonObject body = new()
+        {
+            ["model"] = "auto",
+            ["input"] = new JsonArray(new JsonObject
+            {
+                ["role"] = "user",
+                ["content"] = new JsonArray(new JsonObject { ["type"] = "input_text", ["text"] = "Describe." },
+                                            new JsonObject { ["type"] = "input_image", ["image_url"] = url }),
+            }),
+        };
+
+        Assert.Null(ResponsesRequest.Validate(body, out ResponsesRequest? request));
+        Assert.NotNull(request);
     }
 
     [Fact]

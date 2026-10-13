@@ -60,9 +60,16 @@ public sealed record ResponsesRequest(JsonObject Body, string Model, bool Stream
                     foreach (JsonNode? part in parts)
                     {
                         if (part is not JsonObject p || !TryString(p["type"], out string? type)
-                            || type is not ("input_text" or "output_text" or "refusal"))
+                            || type is not ("input_text" or "input_image" or "output_text" or "refusal"))
                         {
-                            return Invalid("Only text content parts are supported.", $"input[{i}].content", "unsupported_value");
+                            return Invalid("Only text and image content parts are supported.", $"input[{i}].content", "unsupported_value");
+                        }
+
+                        // file_id images live in one Azure resource, and remote URLs would have Azure fetch arbitrary addresses.
+                        if (type == "input_image"
+                            && (!TryString(p["image_url"], out string? url) || !url!.StartsWith("data:image/", StringComparison.Ordinal)))
+                        {
+                            return Invalid("Send images in 'image_url' as a Base64 data URL (data:image/...).", $"input[{i}].content", "unsupported_value");
                         }
                     }
                 }

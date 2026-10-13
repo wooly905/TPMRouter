@@ -32,6 +32,7 @@ public sealed class UsageRecordBuilderTests
 
         Assert.Equal("Use tools.\nHi\nsunny", record.SourceText);
         Assert.Equal("tool", record.InvokedType);
+        Assert.Equal("text", record.InputType);
         Assert.Equal("hello", record.OutputText);
         Assert.Single(record.InvokedTool);
         Assert.Equal("{}", record.InvokedTool[0]!["arguments"]!.GetValue<string>());
@@ -60,6 +61,21 @@ public sealed class UsageRecordBuilderTests
         Assert.Equal("{\"q\":\"hello\"}", record.InvokedTool[0]!["arguments"]!.GetValue<string>());
         Assert.Null(record.InputTokenSize);
         Assert.Null(record.OutputTokenSize);
+    }
+
+    [Fact]
+    public void ImageInput_RecordsImageTypeWithoutImageContent()
+    {
+        UsageRecordBuilder builder = new("""
+            {"input":[{"role":"user","content":[{"type":"input_text","text":"Read the board."},
+                {"type":"input_image","image_url":"data:image/jpeg;base64,SECRETIMAGEDATA"}]}]}
+            """);
+
+        UsageRecord record = builder.Build(DateTimeOffset.UnixEpoch, "");
+
+        Assert.Equal("image", record.InputType);
+        Assert.Equal("Read the board.", record.SourceText);
+        Assert.DoesNotContain("SECRETIMAGEDATA", record.SourceText);
     }
 
     [Theory]

@@ -30,6 +30,7 @@ public sealed class UsageHistoryStore
                 source_ip TEXT NOT NULL,
                 deployment TEXT NOT NULL DEFAULT '',
                 invoked_type TEXT NOT NULL DEFAULT '',
+                input_type TEXT NOT NULL DEFAULT '',
                 source_text TEXT NOT NULL,
                 tools_list TEXT NOT NULL,
                 invoked_tool TEXT NOT NULL,
@@ -42,7 +43,7 @@ public sealed class UsageHistoryStore
         command.ExecuteNonQuery();
 
         // Databases created before these columns existed need them added in place.
-        foreach (string column in new[] { "chat_id", "message_id", "deployment", "invoked_type" })
+        foreach (string column in new[] { "chat_id", "message_id", "deployment", "invoked_type", "input_type" })
         {
             command.CommandText = $"SELECT COUNT(*) FROM pragma_table_info('usage_history') WHERE name = '{column}';";
             if ((long)command.ExecuteScalar()! == 0)
@@ -68,9 +69,9 @@ public sealed class UsageHistoryStore
         using SqliteCommand command = connection.CreateCommand();
         command.CommandText = """
             INSERT INTO usage_history
-                (datetime_utc, chat_id, message_id, source_ip, deployment, invoked_type, source_text, tools_list, invoked_tool,
+                (datetime_utc, chat_id, message_id, source_ip, deployment, invoked_type, input_type, source_text, tools_list, invoked_tool,
                  input_token_size, output_token_size, output_text)
-            VALUES ($datetime, $chatId, $messageId, $ip, $deployment, $invokedType, $source, $tools, $invoked, $input, $output, $text);
+            VALUES ($datetime, $chatId, $messageId, $ip, $deployment, $invokedType, $inputType, $source, $tools, $invoked, $input, $output, $text);
             """;
         command.Parameters.AddWithValue("$datetime", record.DateTime.ToUnixTimeMilliseconds());
         command.Parameters.AddWithValue("$chatId", record.ChatId);
@@ -78,6 +79,7 @@ public sealed class UsageHistoryStore
         command.Parameters.AddWithValue("$ip", record.SourceIp);
         command.Parameters.AddWithValue("$deployment", record.Deployment);
         command.Parameters.AddWithValue("$invokedType", record.InvokedType);
+        command.Parameters.AddWithValue("$inputType", record.InputType);
         command.Parameters.AddWithValue("$source", record.SourceText);
         command.Parameters.AddWithValue("$tools", record.ToolsList.ToJsonString());
         command.Parameters.AddWithValue("$invoked", record.InvokedTool.ToJsonString());
@@ -101,7 +103,7 @@ public sealed class UsageHistoryStore
         command.Parameters.AddWithValue("$end", end.ToUnixTimeMilliseconds());
         long totalCount = (long)command.ExecuteScalar()!;
         command.CommandText = """
-            SELECT datetime_utc, chat_id, message_id, source_ip, deployment, invoked_type, source_text, tools_list, invoked_tool,
+            SELECT datetime_utc, chat_id, message_id, source_ip, deployment, invoked_type, input_type, source_text, tools_list, invoked_tool,
                    input_token_size, output_token_size, output_text
             FROM usage_history WHERE datetime_utc >= $start AND datetime_utc < $end
             ORDER BY datetime_utc DESC, id DESC LIMIT $limit OFFSET $offset;
@@ -120,11 +122,12 @@ public sealed class UsageHistoryStore
                                           reader.GetString(4),
                                           reader.GetString(5),
                                           reader.GetString(6),
-                                          (JsonArray)JsonNode.Parse(reader.GetString(7))!,
+                                          reader.GetString(7),
                                           (JsonArray)JsonNode.Parse(reader.GetString(8))!,
-                                          reader.IsDBNull(9) ? null : reader.GetInt64(9),
+                                          (JsonArray)JsonNode.Parse(reader.GetString(9))!,
                                           reader.IsDBNull(10) ? null : reader.GetInt64(10),
-                                          reader.GetString(11)));
+                                          reader.IsDBNull(11) ? null : reader.GetInt64(11),
+                                          reader.GetString(12)));
             }
         }
 

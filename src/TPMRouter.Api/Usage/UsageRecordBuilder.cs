@@ -10,6 +10,7 @@ public sealed class UsageRecordBuilder
     private readonly string _sourceText;
     private readonly string _chatSeed;
     private readonly string _invokedType;
+    private readonly string _inputType;
     private readonly JsonArray _tools;
     private readonly Dictionary<string, string> _text = [];
     private readonly Dictionary<string, JsonObject> _invoked = [];
@@ -43,6 +44,13 @@ public sealed class UsageRecordBuilder
                        && GetString(last["type"]).EndsWith("_call_output", StringComparison.Ordinal)
             ? "tool"
             : "user";
+        _inputType = body?["input"] is JsonArray parts
+                     && parts.OfType<JsonObject>()
+                         .SelectMany(item => item["content"] as JsonArray ?? [])
+                         .OfType<JsonObject>()
+                         .Any(part => GetString(part["type"]) == "input_image")
+            ? "image"
+            : "text";
         _tools = (JsonArray?)((body?["tools"] as JsonArray)?.DeepClone()) ?? [];
     }
 
@@ -86,6 +94,7 @@ public sealed class UsageRecordBuilder
             sourceIp,
             deployment,
             _invokedType,
+            _inputType,
             _sourceText,
             _tools,
             new JsonArray(_invoked.Values.Select(tool => (JsonNode)tool.DeepClone()).ToArray()),

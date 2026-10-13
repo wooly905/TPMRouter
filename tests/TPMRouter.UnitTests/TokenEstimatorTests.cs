@@ -27,6 +27,21 @@ public class TokenEstimatorTests
     }
 
     [Fact]
+    public void CountPromptTokens_ImageUsesFixedAllowanceInsteadOfEncodedSize()
+    {
+        JsonObject TextOnly() => new() { ["input"] = JsonNode.Parse("""[{"role":"user","content":[{"type":"input_text","text":"Describe."}]}]""") };
+        int textTokens = _estimator.CountPromptTokens(TextOnly());
+        JsonObject request = TextOnly();
+        string imageUrl = "data:image/jpeg;base64," + Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(300_000));
+        ((JsonArray)request["input"]![0]!["content"]!).Add(new JsonObject { ["type"] = "input_image", ["image_url"] = imageUrl });
+
+        int imageTokens = _estimator.CountPromptTokens(request);
+
+        Assert.InRange(imageTokens - textTokens, TokenEstimator.ImageTokens, TokenEstimator.ImageTokens + 20);
+        Assert.Equal(imageUrl, request["input"]![0]!["content"]![1]!["image_url"]!.GetValue<string>());
+    }
+
+    [Fact]
     public void CountPromptTokens_ExcludesRoutingAndGenerationParameters()
     {
         JsonObject request = new() { ["input"] = "Hi" };
