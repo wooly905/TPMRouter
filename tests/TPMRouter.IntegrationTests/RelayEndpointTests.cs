@@ -242,6 +242,17 @@ public sealed class RelayEndpointTests : IDisposable
     }
 
     [Fact]
+    public async Task Version_ReturnsAssemblyVersionWithoutKey()
+    {
+        await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
+
+        JsonElement body = await app.CreateRelayClient(apiKey: null).GetFromJsonAsync<JsonElement>("/relay/version");
+
+        Version expected = typeof(Program).Assembly.GetName().Version!;
+        Assert.StartsWith(expected.ToString(3), body.GetProperty("version").GetString());
+    }
+
+    [Fact]
     public async Task DashboardStatus_ReturnsBudgetsWithoutApiKey()
     {
         await using RelayAppFactory app = new(_upstream, [new("dep-a", TokensPerMinute: 10_000, RequestsPerMinute: 50, Priority: 9)]);

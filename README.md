@@ -226,6 +226,10 @@ Requires `X-Api-Key: <admin-key>`. Returns the current budget of each deployment
 
 Missing or incorrect admin keys return `401` with an empty response body.
 
+### `GET /relay/version`
+
+No key required. Returns `{ "version": "1.0.42+abc1234" }`: `<MajorMinorVersion>` from `src/TPMRouter.Api/TPMRouter.Api.csproj`, then the build number, plus the short git commit when the build has git information. CI sets `BuildNumber` to the GitHub Actions run number (0–65535) and fails the build if it is missing; local builds use `0`. Both web pages show the version in the footer.
+
 ### `GET /healthz`
 
 Liveness check. No key required; it does not probe Azure OpenAI or Redis connectivity.

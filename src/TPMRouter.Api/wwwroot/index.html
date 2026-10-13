@@ -75,7 +75,7 @@
         .ready { background: var(--ready-bg); color: var(--ready-text); }
         .limited { background: var(--limited-bg); color: var(--limited-text); }
         .cooldown { background: var(--cooldown-bg); color: var(--error); }
-        footer { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 10px; font-size: 12px; color: var(--muted); }
+        footer { display: flex; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; border-top: 1px solid var(--border); margin-top: 16px; padding-top: 10px; font-size: 12px; color: var(--muted); }
         footer a { color: var(--accent); }
         footer a:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
         @media (max-width: 600px) { main { padding: 12px 10px; } .models { grid-template-columns: 1fr; padding: 8px; } }
@@ -103,8 +103,11 @@
         <div id="endpoints"></div>
         <p>All bars use a local 60-second rolling window per endpoint and deployment. Reported usage is input + output tokens returned by upstream, including successful and failed attempts; calls without usage add no tokens. Reservations use estimated input + the output limit and remain after errors, retries, or interrupted streams until they expire. Available routing budgets also depend on SafetyFactor and Azure rate-limit headers. Azure's internal estimates and short RPM windows may differ; Azure enforces the final limits.</p>
         <footer>
-            Learn how Azure accounts for rate limits:
-            <a href="https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/quota?tabs=python#understanding-rate-limits" target="_blank" rel="noopener noreferrer">Azure OpenAI: Understanding rate limits</a>
+            <span>
+                Learn how Azure accounts for rate limits:
+                <a href="https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/quota?tabs=python#understanding-rate-limits" target="_blank" rel="noopener noreferrer">Azure OpenAI: Understanding rate limits</a>
+            </span>
+            <span id="version"></span>
         </footer>
     </main>
     <script>
@@ -230,6 +233,10 @@
         refreshButton.addEventListener('click', refresh);
         refresh();
         setInterval(refresh, 10000);
+        fetch('./relay/version', { cache: 'no-store' })
+            .then(response => response.ok ? response.json() : null)
+            .then(data => { if (data) document.getElementById('version').textContent = `TPMRouter v${data.version}`; })
+            .catch(() => { });
     </script>
 </body>
 </html>

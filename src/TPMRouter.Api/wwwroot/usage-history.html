@@ -48,6 +48,7 @@
         summary { cursor: pointer; white-space: pre-wrap; overflow-wrap: anywhere; }
         pre { font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 400px; overflow: auto; margin-bottom: 0; }
         .pagination { justify-content: center; margin-top: 14px; font-size: 12px; }
+        footer { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 10px; font-size: 12px; color: var(--muted); text-align: right; }
         @media (max-width: 600px) { main { padding: 12px 10px; } .filters label { width: 100%; justify-content: space-between; } }
     </style>
 </head>
@@ -97,6 +98,7 @@
             <button id="next" type="button" disabled>下一頁</button>
         </div>
         <p>Token 數採 upstream 回報的實際用量；未回報時顯示「未提供」。點選文字或工具欄位可展開完整內容。</p>
+        <footer id="version"></footer>
     </main>
     <script>
         const themeSelect = document.getElementById('theme');
@@ -236,6 +238,10 @@
         previous.addEventListener('click', () => load(currentPage - 1));
         next.addEventListener('click', () => load(currentPage + 1));
         setRecentDates();
+        fetch('./relay/version', { cache: 'no-store' })
+            .then(response => response.ok ? response.json() : null)
+            .then(data => { if (data) document.getElementById('version').textContent = `TPMRouter v${data.version}`; })
+            .catch(() => { });
     </script>
 </body>
 </html>

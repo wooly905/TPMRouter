@@ -1,3 +1,4 @@
+using System.Reflection;
 using Microsoft.Extensions.Options;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
@@ -71,6 +72,16 @@ app.MapGet("/relay/status", RelayEndpoint.GetStatus)
     .WithMetadata(new ApiKeyRequirement(ApiKeyScope.Admin));
 
 app.MapGet("/relay/dashboard/status", RelayEndpoint.GetStatus);
+
+string version = typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion;
+int metadata = version.IndexOf('+');
+// The SDK appends the full git commit hash; a short hash is enough for display.
+if (metadata >= 0 && version.Length > metadata + 8)
+{
+    version = version[..(metadata + 8)];
+}
+
+app.MapGet("/relay/version", () => Results.Ok(new { version }));
 
 app.MapGet("/relay/usage-history", UsageHistoryEndpoint.GetHistory)
     .WithMetadata(new ApiKeyRequirement(ApiKeyScope.Admin));

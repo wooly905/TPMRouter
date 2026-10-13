@@ -2,10 +2,21 @@
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
+    <MajorMinorVersion>1.0</MajorMinorVersion>
+    <!-- CI passes BuildNumber (MSBuild reads it from the environment); local builds use 0. -->
+    <BuildNumber Condition="'$(BuildNumber)' == '' and '$(GITHUB_ACTIONS)' != 'true'">0</BuildNumber>
+    <VersionPrefix>$(MajorMinorVersion).$(BuildNumber)</VersionPrefix>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UserSecretsId>23f5c8dc-52f1-4f40-b0c1-91ac704a39bd</UserSecretsId>
   </PropertyGroup>
+
+  <Target Name="ValidateBuildNumber" BeforeTargets="BeforeBuild">
+    <Error Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(BuildNumber)', '^\d{1,5}$'))"
+           Text="BuildNumber must be an integer from 0 to 65535 (got '$(BuildNumber)'). CI builds must set it, e.g. BuildNumber=${{ github.run_number }}." />
+    <Error Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(BuildNumber)', '^\d{1,5}$')) and $(BuildNumber) &gt; 65535"
+           Text="BuildNumber must be an integer from 0 to 65535 (got '$(BuildNumber)')." />
+  </Target>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Bcl.Memory" Version="10.0.12" />
