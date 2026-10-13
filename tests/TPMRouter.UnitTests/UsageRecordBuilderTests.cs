@@ -32,7 +32,6 @@ public sealed class UsageRecordBuilderTests
 
         Assert.Equal("Use tools.\nHi\nsunny", record.SourceText);
         Assert.Equal("tool", record.InvokedType);
-        Assert.Equal("gpt-4.1", record.Model);
         Assert.Equal("hello", record.OutputText);
         Assert.Single(record.InvokedTool);
         Assert.Equal("{}", record.InvokedTool[0]!["arguments"]!.GetValue<string>());
@@ -104,7 +103,6 @@ public sealed class UsageRecordBuilderTests
         UsageRecord record = builder.Build(DateTimeOffset.UnixEpoch, "");
 
         Assert.Equal("Cannot help.", record.OutputText);
-        Assert.Equal("gpt-4.1-mini", record.Model);
         Assert.Equal(0, record.OutputTokenSize);
     }
 

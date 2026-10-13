@@ -15,7 +15,6 @@ public sealed class UsageRecordBuilder
     private readonly Dictionary<string, JsonObject> _invoked = [];
     private long? _inputTokens;
     private long? _outputTokens;
-    private string _model = "";
 
     public long? TotalTokens => _inputTokens + _outputTokens;
 
@@ -85,7 +84,6 @@ public sealed class UsageRecordBuilder
             ChatId(sourceIp),
             Guid.NewGuid().ToString(),
             sourceIp,
-            _model,
             deployment,
             _invokedType,
             _sourceText,
@@ -110,11 +108,6 @@ public sealed class UsageRecordBuilder
     {
         JsonObject? response = body["response"] as JsonObject;
         JsonObject payload = response ?? body;
-
-        if (GetString(payload["model"]) is { Length: > 0 } model)
-        {
-            _model = model;
-        }
 
         if (payload["usage"] is JsonObject usage)
         {

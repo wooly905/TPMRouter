@@ -83,7 +83,6 @@
                         <th scope="col">Chat ID</th>
                         <th scope="col">Message ID</th>
                         <th scope="col">來源 IP</th>
-                        <th scope="col">Model</th>
                         <th scope="col">Deployment</th>
                         <th scope="col">Invoked type</th>
                         <th scope="col">來源文字</th>
@@ -94,7 +93,7 @@
                         <th scope="col">輸出文字</th>
                     </tr>
                 </thead>
-                <tbody id="records"><tr><td colspan="13">尚未查詢。</td></tr></tbody>
+                <tbody id="records"><tr><td colspan="12">尚未查詢。</td></tr></tbody>
             </table>
         </div>
         <div class="pagination">
@@ -177,7 +176,7 @@
         function emptyRow(text) {
             const row = element('tr');
             const cell = element('td', text);
-            cell.colSpan = 13;
+            cell.colSpan = 12;
             row.append(cell);
             records.replaceChildren(row);
         }
@@ -189,7 +188,6 @@
                 row.append(element('td', new Date(record.dateTime).toLocaleString('zh-TW', { hour12: false }), 'datetime'),
                     idCell(record.chatId), idCell(record.messageId),
                     element('td', record.sourceIp || '未提供', 'ip'),
-                    element('td', record.model || '—', 'ip'),
                     element('td', record.deployment || '—', 'ip'),
                     element('td', record.invokedType || '—', 'ip'),
                     textCell(record.sourceText), toolsCell(record.toolsList), toolsCell(record.invokedTool),
