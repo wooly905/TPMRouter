@@ -11,6 +11,11 @@
         } catch {
             document.documentElement.dataset.theme = 'light';
         }
+        try {
+            document.documentElement.dataset.layout = localStorage.getItem('tpmrouter-layout') === 'vertical' ? 'vertical' : 'horizontal';
+        } catch {
+            document.documentElement.dataset.layout = 'horizontal';
+        }
     </script>
     <style>
         :root {
@@ -79,6 +84,9 @@
         footer a { color: var(--accent); }
         footer a:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
         @media (max-width: 600px) { main { padding: 12px 10px; } .models { grid-template-columns: 1fr; padding: 8px; } }
+        :root[data-layout="horizontal"] .models { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(300px, 1fr); overflow-x: auto; }
+        :root[data-layout="vertical"] #endpoints { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(320px, 1fr); gap: 10px; align-items: start; overflow-x: auto; }
+        :root[data-layout="vertical"] .models { grid-template-columns: 1fr; }
     </style>
 </head>
 <body>
@@ -90,6 +98,11 @@
                 <select id="theme">
                     <option value="light">Light</option>
                     <option value="dark">Dark</option>
+                </select>
+                <label for="layout" class="theme-label">Layout</label>
+                <select id="layout">
+                    <option value="horizontal">Horizontal</option>
+                    <option value="vertical">Vertical</option>
                 </select>
                 <button id="refresh" type="button">Refresh status</button>
                 <a class="button-link" href="./usage-history.html">Usage history</a>
@@ -119,6 +132,17 @@
                 localStorage.setItem('tpmrouter-theme', themeSelect.value);
             } catch {
                 // Theme switching still works when browser storage is unavailable.
+            }
+        });
+
+        const layoutSelect = document.getElementById('layout');
+        layoutSelect.value = document.documentElement.dataset.layout;
+        layoutSelect.addEventListener('change', () => {
+            document.documentElement.dataset.layout = layoutSelect.value;
+            try {
+                localStorage.setItem('tpmrouter-layout', layoutSelect.value);
+            } catch {
+                // Layout switching still works when browser storage is unavailable.
             }
         });
 

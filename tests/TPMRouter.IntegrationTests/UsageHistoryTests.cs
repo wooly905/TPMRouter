@@ -217,6 +217,20 @@ public sealed class UsageHistoryTests : IDisposable
         Assert.Contains("id=\"end-date\" type=\"date\"", page);
     }
 
+    [Fact]
+    public async Task StatusPage_ContainsLayoutToggleDefaultingToHorizontal()
+    {
+        await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
+        using HttpClient client = app.CreateClient();
+
+        string index = await client.GetStringAsync("/index.html");
+
+        Assert.Contains("<select id=\"layout\">", index);
+        Assert.Contains("<option value=\"horizontal\">Horizontal</option>", index);
+        Assert.Contains("<option value=\"vertical\">Vertical</option>", index);
+        Assert.Contains("=== 'vertical' ? 'vertical' : 'horizontal'", index);
+    }
+
     private static UsageHistoryPage ReadHistory(RelayAppFactory app) =>
         app.Services.GetRequiredService<UsageHistoryStore>()
             .GetHistory(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1), 1, 50);
