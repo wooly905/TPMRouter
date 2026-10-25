@@ -8,9 +8,9 @@ permissions:
   id-token: write
 
 env:
-  AZURE_WEBAPP_NAME: TPMRouterApi
+  AZURE_WEBAPP_NAME: TPMRouter
   AZURE_RESOURCE_GROUP: AnswerCode2026031621230ResourceGroup
-  AZURE_WEBAPP_URL: https://tpmrouterapi-babxfncdfdbgegf5.westus3-01.azurewebsites.net
+  AZURE_WEBAPP_URL: https://tpmrouter.azurewebsites.net
 
 jobs:
   deploy:
