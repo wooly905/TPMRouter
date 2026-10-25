@@ -18,7 +18,8 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '10.0.403'
+          skip-lts-prepass: true
 
       - name: Restore
         run: dotnet restore TPMRouter.slnx
