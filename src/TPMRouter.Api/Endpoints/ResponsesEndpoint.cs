@@ -32,6 +32,9 @@ public static class ResponsesEndpoint
             return OpenAIError.Result(invalid);
         }
 
+        // Ciphertext is bound to the Azure resource that created it. Drop it so the next turn can use another resource.
+        EncryptedReasoning.Strip(request!.Body);
+
         UsageRecordBuilder streamedUsage = new("");
         RelayOutcome outcome = await service.RelayResponseAsync(request!,
                                                                 (response, token) => CopyStreamAsync(response, context, streamedUsage, token),
@@ -57,7 +60,7 @@ public static class ResponsesEndpoint
         }
 
         return outcome.Content is not null && outcome.StatusCode is >= 200 and < 300
-            ? Results.Content(outcome.Content.ToString(), "application/json", Encoding.UTF8, outcome.StatusCode)
+            ? Results.Content(EncryptedReasoning.StripJson(outcome.Content.ToString()), "application/json", Encoding.UTF8, outcome.StatusCode)
             : OpenAIError.Result(outcome);
     }
 
@@ -72,7 +75,9 @@ public static class ResponsesEndpoint
         {
             if (line.StartsWith("data:", StringComparison.Ordinal))
             {
-                data.AppendLine(line[5..].TrimStart());
+                string payload = EncryptedReasoning.StripJson(line[5..].TrimStart());
+                data.AppendLine(payload);
+                line = "data: " + payload;
             }
 
             if (line.Length == 0 && data.Length > 0)

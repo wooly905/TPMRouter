@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using OpenAI.Responses;
+using TPMRouter.Api.Relay;
 using WireMock.Matchers;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
@@ -58,10 +59,59 @@ public sealed class ResponsesEndpointTests : IDisposable
         JsonObject actual = (JsonObject)JsonNode.Parse(_upstream.LogEntries.Single().RequestMessage!.Body!)!;
         Assert.Equal("/openai/v1/responses", _upstream.LogEntries.Single().RequestMessage!.Path);
         Assert.Equal("dep-a", actual["model"]!.GetValue<string>());
-        foreach (KeyValuePair<string, JsonNode?> property in body.Where(p => p.Key != "model"))
+        JsonObject forwarded = (JsonObject)body.DeepClone();
+        EncryptedReasoning.Strip(forwarded);
+        foreach (KeyValuePair<string, JsonNode?> property in forwarded.Where(p => p.Key != "model"))
         {
             Assert.True(JsonNode.DeepEquals(property.Value, actual[property.Key]), property.Key);
         }
+
+        Assert.DoesNotContain("opaque", _upstream.LogEntries.Single().RequestMessage!.Body);
+        Assert.Null(actual["include"]);
+    }
+
+    [Fact]
+    public async Task EncryptedReasoning_IsRemovedBeforeTheClientSeesTheResponse()
+    {
+        const string upstream = """
+            {"id":"resp-1","status":"completed","output":[
+             {"type":"reasoning","id":"rs-9","summary":[{"type":"summary_text","text":"checked"}],"encrypted_content":"cipher"},
+             {"type":"message","content":[{"type":"output_text","text":"hello"}]}],
+             "usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}
+            """;
+        Respond(_upstream, "dep-a", upstream);
+        await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
+        using HttpClient client = app.CreateOpenAIClient();
+
+        using HttpResponseMessage response = await PostAsync(client, """{"model":"auto","input":"Hi"}""");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        string json = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("cipher", json);
+        Assert.DoesNotContain("encrypted_content", json);
+        JsonObject body = (JsonObject)JsonNode.Parse(json)!;
+        Assert.Equal("rs-9", body["output"]![0]!["id"]!.GetValue<string>());
+        Assert.Equal("checked", body["output"]![0]!["summary"]![0]!["text"]!.GetValue<string>());
+        Assert.Equal("hello", body["output"]![1]!["content"]![0]!["text"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task EncryptedReasoning_IsRemovedFromStreamEvents()
+    {
+        const string stream =
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"id\":\"rs-9\",\"encrypted_content\":\"cipher\",\"summary\":[]}}\n\n"
+            + "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs-9\",\"encrypted_content\":\"cipher\",\"summary\":[]}]}}\n\n";
+        Respond(_upstream, "dep-a", stream, contentType: "text/event-stream");
+        await using RelayAppFactory app = new(_upstream, [new("dep-a")]);
+        using HttpClient client = app.CreateOpenAIClient();
+
+        using HttpResponseMessage response = await PostAsync(client, """{"model":"auto","input":"Hi","stream":true}""");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        string text = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("cipher", text);
+        Assert.Contains("rs-9", text);
+        Assert.Contains("response.completed", text);
     }
 
     [Fact]
