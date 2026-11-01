@@ -1,6 +1,6 @@
 # TPMRouter
 
-TPMRouter is an ASP.NET Core (.NET 10) web API that sits in front of multiple Azure OpenAI resources, each with its own deployments and credentials. Clients use the OpenAI-compatible Responses API for text, reasoning, and function calling. The router picks an eligible deployment with token budget and returns its response.
+TPMRouter is an ASP.NET Core (.NET 10) web API that sits in front of multiple Azure OpenAI resources, each with its own deployments and credentials. Clients use the OpenAI-compatible Responses or Chat Completions API for text, reasoning, and function calling. The router picks an eligible deployment with token budget and returns its response.
 
 With `model: "auto"`, the router chooses from configured deployments across all endpoints based on their tokens-per-minute (TPM) and requests-per-minute (RPM) limits. An explicit model must match a configured deployment's `Model` exactly (case-sensitive) and restricts routing and failover to deployments with that alias, including deployments on different endpoints. `Name` identifies the actual Azure deployment; it can differ from `Model`.
 
@@ -48,7 +48,7 @@ Settings live under the `Relay` section of `src/TPMRouter.Api/appsettings.json`.
 | `Endpoints[].Id` | Required, unique, stable endpoint ID used in budget keys, status, logs, and metrics. |
 | `Endpoints[].Endpoint` | Unique HTTP/HTTPS resource root URI; the router appends `/openai/v1/`. Do not include an API path, query, or fragment. |
 | `Endpoints[].ApiKey` | API key for this Azure OpenAI resource. **Secret.** |
-| `ClientApiKey` | Client key for Responses (Bearer). **Secret.** |
+| `ClientApiKey` | Client key for Responses and Chat Completions (Bearer). **Secret.** |
 | `AdminApiKey` | Key required for `GET /relay/status`. **Secret.** |
 | `SafetyFactor` | Fraction of TPM/RPM the relay may use (default `0.9`). |
 | `MaxQueueWaitSeconds` | Queue-wait cutoff measured from the start of routing, also constrained by the request deadline (default `30`). |
@@ -173,9 +173,30 @@ The database is created at `data/usage-history.db` relative to the API content r
 
 `GET /relay/usage-history` requires `X-Api-Key: <admin-key>` and accepts optional ISO 8601 `start` and `end` timestamps plus a positive `page`. The start is inclusive and the end exclusive; omitted timestamps default to the last seven days. The JSON response contains `items`, `totalCount`, `page`, and `pageSize`. The browser keeps the entered key only in the current page.
 
-Responses requests require `Authorization: Bearer <client-key>`. `/relay/status` requires `X-Api-Key: <admin-key>`.
+Responses and Chat Completions requests require `Authorization: Bearer <client-key>`. `/relay/status` requires `X-Api-Key: <admin-key>`.
 
-The inference API exposes `POST /v1/responses`. The former `POST /relay` and `POST /v1/chat/completions` endpoints have been removed and return `404`.
+The inference API exposes `POST /v1/responses` and `POST /v1/chat/completions`. The former `POST /relay` endpoint returns `404`.
+
+### `POST /v1/chat/completions`
+
+Use the [OpenAI Chat Completions format](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
+
+```bash
+curl "http://localhost:5042/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <client-key>" \
+  -d '{"model":"auto","messages":[{"role":"user","content":"Hello"}],"max_completion_tokens":2000}'
+```
+
+`model` and a non-empty `messages` array are required. Messages support developer, system, user, assistant, and tool roles. Function tools use the Chat Completions `function` object. Send assistant `tool_calls` and matching tool messages with `tool_call_id` to continue a tool call. The router does not execute tools.
+
+Use `max_completion_tokens` or the deprecated `max_tokens` field, but do not send both. The router supplies `max_completion_tokens` from the selected deployment's `MaxOutputTokens` when neither field is set. An explicit limit excludes deployments with a smaller cap. When `n` is set, the token reservation includes the output limit for each choice. Estimates include the complete message history, tool definitions, and `response_format`.
+
+User messages can include `image_url` parts with Base64 data URLs (`data:image/...`). Image requests require `SupportsVision: true`. Each image reserves a fixed 2000 input tokens. Remote image URLs, audio, and file content parts return `400`.
+
+The router forwards remaining options unchanged. The selected upstream deployment must support Chat Completions and the requested options. Successful JSON responses preserve `choices`, tool calls, usage, and extension fields. Set `stream: true` for native Chat Completions SSE chunks ending with `data: [DONE]`. Set `stream_options: {"include_usage": true}` to request streaming token counts. A stream without `[DONE]` is aborted. Failover stops once the response starts.
+
+Both inference APIs share deployment priorities, TPM/RPM budgets, cooldowns, authentication, and usage history. OpenAI SDK clients can use `https://<router-host>/v1/` as their base URL and call `chat.completions.create` with `ClientApiKey`. Retrieval and stored-completion management endpoints are not exposed.
 
 ### `POST /v1/responses`
 

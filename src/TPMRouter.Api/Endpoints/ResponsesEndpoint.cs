@@ -9,7 +9,9 @@ namespace TPMRouter.Api.Endpoints;
 
 public static class ResponsesEndpoint
 {
-    public static async Task<IResult> HandleAsync(HttpContext context, RelayService service)
+    public static Task<IResult> HandleAsync(HttpContext context, RelayService service) => HandleRequestAsync(context, service, false);
+
+    internal static async Task<IResult> HandleRequestAsync(HttpContext context, RelayService service, bool chatCompletion)
     {
         if (!context.Request.HasJsonContentType())
         {
@@ -26,18 +28,35 @@ public static class ResponsesEndpoint
             return OpenAIError.Result(new RelayOutcome(400, Error: "The request body is not valid JSON."));
         }
 
-        RelayOutcome? invalid = ResponsesRequest.Validate(body, out ResponsesRequest? request);
+        RelayRequest? request;
+        RelayOutcome? invalid;
+
+        if (chatCompletion)
+        {
+            invalid = ChatCompletionRequest.Validate(body, out request);
+        }
+        else
+        {
+            invalid = ResponsesRequest.Validate(body, out ResponsesRequest? responsesRequest);
+            request = responsesRequest;
+        }
+
         if (invalid is not null)
         {
             return OpenAIError.Result(invalid);
         }
 
         // Ciphertext is bound to the Azure resource that created it. Drop it so the next turn can use another resource.
-        EncryptedReasoning.Strip(request!.Body);
+        if (!chatCompletion)
+        {
+            EncryptedReasoning.Strip(request!.Body);
+        }
 
         UsageRecordBuilder streamedUsage = new("");
         RelayOutcome outcome = await service.RelayResponseAsync(request!,
-                                                                (response, token) => CopyStreamAsync(response, context, streamedUsage, token),
+                                                                (response, token) => chatCompletion
+                                                                    ? ChatCompletionEndpoint.CopyStreamAsync(response, context, streamedUsage, token)
+                                                                    : CopyStreamAsync(response, context, streamedUsage, token),
                                                                 () => context.Response.HasStarted,
                                                                 context.RequestAborted,
                                                                 streamedUsage,
@@ -60,7 +79,7 @@ public static class ResponsesEndpoint
         }
 
         return outcome.Content is not null && outcome.StatusCode is >= 200 and < 300
-            ? Results.Content(EncryptedReasoning.StripJson(outcome.Content.ToString()), "application/json", Encoding.UTF8, outcome.StatusCode)
+            ? Results.Content(chatCompletion ? outcome.Content.ToString() : EncryptedReasoning.StripJson(outcome.Content.ToString()), "application/json", Encoding.UTF8, outcome.StatusCode)
             : OpenAIError.Result(outcome);
     }
 

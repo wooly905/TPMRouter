@@ -30,7 +30,7 @@ public sealed class RelayService(IOptions<RelayOptions> options,
     private readonly Dictionary<string, DeploymentTarget> _deployments =
         options.Value.GetDeploymentTargets().ToDictionary(d => d.Key, StringComparer.Ordinal);
 
-    public async Task<RelayOutcome> RelayResponseAsync(ResponsesRequest request,
+    public async Task<RelayOutcome> RelayResponseAsync(RelayRequest request,
                                                        Func<PipelineResponse, CancellationToken, Task> onStream,
                                                        Func<bool> hasStarted,
                                                        CancellationToken requestAborted,
@@ -60,7 +60,7 @@ public sealed class RelayService(IOptions<RelayOptions> options,
         if (candidates.Count == 0)
         {
             return new RelayOutcome(400, Error: "The requested output limit exceeds the configured limit for this model.",
-                                    ErrorParam: "max_output_tokens");
+                                    ErrorParam: request.OutputLimitField);
         }
 
         int promptTokens = estimator.CountPromptTokens(requestBody);
@@ -68,7 +68,7 @@ public sealed class RelayService(IOptions<RelayOptions> options,
         foreach (DeploymentTarget target in candidates)
         {
             DeploymentOptions deployment = target.Deployment;
-            long estimate = promptTokens + (maxOutputTokens ?? deployment.MaxOutputTokens);
+            long estimate = promptTokens + (long)(maxOutputTokens ?? deployment.MaxOutputTokens) * request.ChoiceCount;
             if (DeploymentSelector.FitsDeployment(estimate, deployment, _options.SafetyFactor))
             {
                 estimates[target.Key] = estimate;
@@ -89,7 +89,7 @@ public sealed class RelayService(IOptions<RelayOptions> options,
 
             if (maxOutputTokens is null)
             {
-                body["max_output_tokens"] = selected.Deployment.MaxOutputTokens;
+                body[request.OutputLimitField] = selected.Deployment.MaxOutputTokens;
             }
 
             DeploymentStatus status = (await tracker.GetStatusAsync())
@@ -108,7 +108,9 @@ public sealed class RelayService(IOptions<RelayOptions> options,
 
             try
             {
-                UpstreamResult result = await upstream.CreateResponseAsync(selected.Key, body, async (response, streamToken) =>
+                Func<string, JsonObject, Func<PipelineResponse, CancellationToken, Task>, CancellationToken, Task<UpstreamResult>> send =
+                    request is ChatCompletionRequest ? upstream.CreateChatCompletionAsync : upstream.CreateResponseAsync;
+                UpstreamResult result = await send(selected.Key, body, async (response, streamToken) =>
                 {
                     RateLimitHeaders headers = AzureOpenAIUpstreamClient.ReadRateLimits(response.Headers);
                     await tracker.RecordHeadersAsync(selected.Key, headers.RemainingTokens, headers.RemainingRequests, timeProvider.GetUtcNow());

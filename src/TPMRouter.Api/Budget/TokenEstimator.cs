@@ -14,11 +14,11 @@ public sealed class TokenEstimator
     {
         // Include input framing, tool definitions, and structured output schemas in the conservative estimate.
         int count = 3;
-        foreach (string field in new[] { "input", "instructions", "tools", "text" })
+        foreach (string field in new[] { "input", "instructions", "tools", "text", "messages", "functions", "response_format" })
         {
             if (request[field] is { } value)
             {
-                if (field == "input")
+                if (field is "input" or "messages")
                 {
                     value = WithoutImageData(value, out int images);
                     count += images * ImageTokens;
@@ -44,7 +44,7 @@ public sealed class TokenEstimator
                      .SelectMany(item => item["content"] as JsonArray ?? [])
                      .OfType<JsonObject>())
         {
-            if (part["type"] is JsonValue type && type.TryGetValue(out string? name) && name == "input_image")
+            if (part["type"] is JsonValue type && type.TryGetValue(out string? name) && name is "input_image" or "image_url")
             {
                 part.Remove("image_url");
                 images++;

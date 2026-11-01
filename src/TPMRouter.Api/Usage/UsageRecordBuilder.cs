@@ -28,6 +28,11 @@ public sealed class UsageRecordBuilder
     public UsageRecordBuilder(string request)
     {
         JsonObject? body = ParseObject(request);
+        if (body?["messages"] is JsonArray messages)
+        {
+            body["input"] = messages.DeepClone();
+        }
+
         _sourceText = body is null ? request : JoinText(body["instructions"], body["input"]);
         // Clients resend the full history each turn, so the first user message identifies the chat.
         _chatSeed = body?["input"] switch
@@ -41,14 +46,15 @@ public sealed class UsageRecordBuilder
         // A request whose latest input item is a tool result continues a tool call; otherwise the user started it.
         _invokedType = body?["input"] is JsonArray { Count: > 0 } input
                        && input[^1] is JsonObject last
-                       && GetString(last["type"]).EndsWith("_call_output", StringComparison.Ordinal)
+                       && (GetString(last["type"]).EndsWith("_call_output", StringComparison.Ordinal)
+                           || GetString(last["role"]) is "tool" or "function")
             ? "tool"
             : "user";
         _inputType = body?["input"] is JsonArray parts
                      && parts.OfType<JsonObject>()
                          .SelectMany(item => item["content"] as JsonArray ?? [])
                          .OfType<JsonObject>()
-                         .Any(part => GetString(part["type"]) == "input_image")
+                         .Any(part => GetString(part["type"]) is "input_image" or "image_url")
             ? "image"
             : "text";
         _tools = (JsonArray?)((body?["tools"] as JsonArray)?.DeepClone()) ?? [];
@@ -120,8 +126,60 @@ public sealed class UsageRecordBuilder
 
         if (payload["usage"] is JsonObject usage)
         {
-            _inputTokens = ReadTokenCount(usage["input_tokens"]) ?? _inputTokens;
-            _outputTokens = ReadTokenCount(usage["output_tokens"]) ?? _outputTokens;
+            _inputTokens = ReadTokenCount(usage["input_tokens"] ?? usage["prompt_tokens"]) ?? _inputTokens;
+            _outputTokens = ReadTokenCount(usage["output_tokens"] ?? usage["completion_tokens"]) ?? _outputTokens;
+        }
+
+        if (payload["choices"] is JsonArray choices)
+        {
+            foreach (JsonObject choice in choices.OfType<JsonObject>())
+            {
+                string key = choice["index"]?.ToJsonString() ?? "0";
+                JsonObject? message = choice["message"] as JsonObject;
+                JsonObject? delta = choice["delta"] as JsonObject;
+
+                if ((message ?? delta) is not { } outputMessage)
+                {
+                    continue;
+                }
+
+                string text = JoinText(outputMessage["content"], outputMessage["refusal"]);
+                _text[key] = message is not null ? text : _text.GetValueOrDefault(key, "") + text;
+
+                if (outputMessage["tool_calls"] is JsonArray calls)
+                {
+                    for (int i = 0; i < calls.Count; i++)
+                    {
+                        if (calls[i] is not JsonObject call)
+                        {
+                            continue;
+                        }
+
+                        string toolKey = key + ":" + (call["index"]?.ToJsonString() ?? i.ToString());
+
+                        if (!_invoked.TryGetValue(toolKey, out JsonObject? tool) || message is not null)
+                        {
+                            tool = new JsonObject { ["type"] = "function_call", ["arguments"] = "" };
+                            _invoked[toolKey] = tool;
+                        }
+
+                        if (call["id"] is { } id)
+                        {
+                            tool["call_id"] = id.DeepClone();
+                        }
+
+                        if (call["function"] is JsonObject function)
+                        {
+                            if (function["name"] is { } name)
+                            {
+                                tool["name"] = name.DeepClone();
+                            }
+
+                            tool["arguments"] = GetString(tool["arguments"]) + GetString(function["arguments"]);
+                        }
+                    }
+                }
+            }
         }
 
         if (payload["output"] is JsonArray output)

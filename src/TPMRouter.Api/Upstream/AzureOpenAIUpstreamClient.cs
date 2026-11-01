@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Options;
 using OpenAI;
+using OpenAI.Chat;
 using OpenAI.Responses;
 using TPMRouter.Api.Options;
 
@@ -15,6 +16,7 @@ namespace TPMRouter.Api.Upstream;
 public interface IUpstreamClient
 {
     Task<UpstreamResult> CreateResponseAsync(string deployment, JsonObject request, Func<PipelineResponse, CancellationToken, Task> onStream, CancellationToken cancellationToken);
+    Task<UpstreamResult> CreateChatCompletionAsync(string deployment, JsonObject request, Func<PipelineResponse, CancellationToken, Task> onStream, CancellationToken cancellationToken);
 }
 
 public readonly record struct RateLimitHeaders(long? RemainingTokens, long? RemainingRequests, TimeSpan? RetryAfter);
@@ -29,6 +31,7 @@ public sealed record UpstreamResult(int Status,
 public sealed class AzureOpenAIUpstreamClient : IUpstreamClient
 {
     private readonly Dictionary<string, ResponsesClient> _responseClients;
+    private readonly Dictionary<string, ChatClient> _chatClients = new(StringComparer.Ordinal);
 
     public AzureOpenAIUpstreamClient(IOptions<RelayOptions> options)
     {
@@ -46,6 +49,7 @@ public sealed class AzureOpenAIUpstreamClient : IUpstreamClient
             {
                 DeploymentTarget target = new(endpoint.Id, deployment);
                 _responseClients.Add(target.Key, client.GetResponsesClient());
+                _chatClients.Add(target.Key, client.GetChatClient(deployment.Name));
             }
         }
     }
@@ -55,6 +59,12 @@ public sealed class AzureOpenAIUpstreamClient : IUpstreamClient
                                                     Func<PipelineResponse, CancellationToken, Task> onStream,
                                                     CancellationToken cancellationToken) =>
         CompleteAsync(request, _responseClients[deployment].CreateResponseAsync, onStream, cancellationToken);
+
+    public Task<UpstreamResult> CreateChatCompletionAsync(string deployment,
+                                                        JsonObject request,
+                                                        Func<PipelineResponse, CancellationToken, Task> onStream,
+                                                        CancellationToken cancellationToken) =>
+        CompleteAsync(request, _chatClients[deployment].CompleteChatAsync, onStream, cancellationToken);
 
     private static async Task<UpstreamResult> CompleteAsync(JsonObject request,
                                                             Func<BinaryContent, RequestOptions, Task<ClientResult>> send,

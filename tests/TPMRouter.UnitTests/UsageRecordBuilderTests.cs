@@ -5,6 +5,35 @@ namespace TPMRouter.UnitTests;
 
 public sealed class UsageRecordBuilderTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ChatCompletion_RecordsToolsUsageAndText(bool streaming)
+    {
+        UsageRecordBuilder builder = new("""
+            {"messages":[{"role":"user","content":"Find it"},{"role":"tool","tool_call_id":"previous","content":"Found"}],
+             "tools":[{"type":"function","function":{"name":"lookup"}}]}
+            """);
+        string response = streaming
+            ? "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\",\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\"}}]}}]}\n\n"
+                + "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"}\"}}]}}]}\n\n"
+                + "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3}}\n\ndata: [DONE]\n\n"
+            : """{"choices":[{"index":0,"message":{"content":"hello","tool_calls":[{"id":"call-1","function":{"name":"lookup","arguments":"{}"}}]}}],"usage":{"prompt_tokens":12,"completion_tokens":3}}""";
+        builder.ReadResponse(response, streaming);
+        UsageRecord record = builder.Build(DateTimeOffset.UnixEpoch, "");
+
+        Assert.Equal("Find it\nFound", record.SourceText);
+        Assert.Equal("tool", record.InvokedType);
+        Assert.NotEmpty(record.ChatId);
+        Assert.Single(record.ToolsList);
+        Assert.Equal("hello", record.OutputText);
+        Assert.Equal(12, record.InputTokenSize);
+        Assert.Equal(3, record.OutputTokenSize);
+        Assert.Equal("lookup", record.InvokedTool[0]!["name"]!.GetValue<string>());
+        Assert.Equal("call-1", record.InvokedTool[0]!["call_id"]!.GetValue<string>());
+        Assert.Equal("{}", record.InvokedTool[0]!["arguments"]!.GetValue<string>());
+    }
+
     [Fact]
     public void ResponsesStream_TerminalOutputReplacesDeltasWithoutDuplication()
     {

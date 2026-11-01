@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 namespace TPMRouter.Api.Relay;
 
 public sealed record ResponsesRequest(JsonObject Body, string Model, bool Stream, int? MaxOutputTokens, bool HasImages = false)
+    : RelayRequest(Body, Model, Stream, MaxOutputTokens, HasImages)
 {
     public static RelayOutcome? Validate(JsonNode? body, out ResponsesRequest? request)
     {

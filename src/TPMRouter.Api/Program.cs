@@ -68,6 +68,9 @@ app.MapHealthChecks("/healthz");
 app.MapPost("/v1/responses", ResponsesEndpoint.HandleAsync)
     .WithMetadata(new ApiKeyRequirement(ApiKeyScope.Client, OpenAICompatible: true));
 
+app.MapPost("/v1/chat/completions", ChatCompletionEndpoint.HandleAsync)
+    .WithMetadata(new ApiKeyRequirement(ApiKeyScope.Client, OpenAICompatible: true));
+
 app.MapGet("/relay/status", RelayEndpoint.GetStatus)
     .WithMetadata(new ApiKeyRequirement(ApiKeyScope.Admin));
 

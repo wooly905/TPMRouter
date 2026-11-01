@@ -63,6 +63,9 @@ internal sealed class FakeUpstreamClient(Func<string, UpstreamResult> respond) :
 
     public static UpstreamResult Ok() => new(200, null, default, BinaryData.FromString("{}"));
 
+    public Task<UpstreamResult> CreateChatCompletionAsync(string deployment, JsonObject request, Func<PipelineResponse, CancellationToken, Task> onStream, CancellationToken cancellationToken) =>
+        CreateResponseAsync(deployment, request, onStream, cancellationToken);
+
     public Task<UpstreamResult> CreateResponseAsync(string deployment, JsonObject request, Func<PipelineResponse, CancellationToken, Task> onStream, CancellationToken cancellationToken)
     {
         Calls.Add(deployment);

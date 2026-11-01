@@ -8,6 +8,38 @@ public class TokenEstimatorTests
     private readonly TokenEstimator _estimator = new();
 
     [Fact]
+    public void CountPromptTokens_IncludesChatHistoryToolsAndResponseFormat()
+    {
+        JsonObject request = new() { ["messages"] = JsonNode.Parse("""[{"role":"user","content":"Hi"}]""") };
+        int initial = _estimator.CountPromptTokens(request);
+        request["messages"]![0]!["content"] = new string('x', 1000);
+        int withHistory = _estimator.CountPromptTokens(request);
+        request["tools"] = JsonNode.Parse("""[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]""");
+        int withTools = _estimator.CountPromptTokens(request);
+        request["response_format"] = JsonNode.Parse("""{"type":"json_schema","json_schema":{"name":"answer","schema":{"type":"object"}}}""");
+
+        Assert.True(withHistory > initial);
+        Assert.True(withTools > withHistory);
+        Assert.True(_estimator.CountPromptTokens(request) > withTools);
+    }
+
+    [Fact]
+    public void CountPromptTokens_ChatImageDoesNotCountBase64Bytes()
+    {
+        JsonObject request = new() { ["messages"] = JsonNode.Parse("""[{"role":"user","content":[{"type":"text","text":"Hi"}]}]""") };
+        int initial = _estimator.CountPromptTokens(request);
+        string url = "data:image/png;base64," + new string('A', 400_000);
+        ((JsonArray)request["messages"]![0]!["content"]!).Add(new JsonObject
+        {
+            ["type"] = "image_url",
+            ["image_url"] = new JsonObject { ["url"] = url },
+        });
+
+        Assert.InRange(_estimator.CountPromptTokens(request) - initial, TokenEstimator.ImageTokens, TokenEstimator.ImageTokens + 20);
+        Assert.Equal(url, request["messages"]![0]!["content"]![1]!["image_url"]!["url"]!.GetValue<string>());
+    }
+
+    [Fact]
     public void CountPromptTokens_IncludesResponsesHistoryInstructionsToolsAndTextSchema()
     {
         JsonObject request = new() { ["input"] = "Hi" };
