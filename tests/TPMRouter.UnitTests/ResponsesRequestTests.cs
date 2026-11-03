@@ -14,7 +14,10 @@ public sealed class ResponsesRequestTests
     [InlineData("{\"model\":\"auto\",\"input\":\"Hi\",\"max_output_tokens\":0}", "max_output_tokens")]
     [InlineData("{\"model\":\"auto\",\"input\":\"Hi\",\"max_output_tokens\":1.5}", "max_output_tokens")]
     [InlineData("{\"model\":\"auto\",\"input\":\"Hi\",\"previous_response_id\":\"resp-1\"}", "previous_response_id")]
-    [InlineData("{\"model\":\"auto\",\"input\":\"Hi\",\"conversation\":\"conv-1\"}", "conversation")]
+    [InlineData("{\"model\":\"auto\",\"input\":\"Hi\",\"conversation\":{}}", "conversation")]
+    [InlineData("{\"model\":\"auto\",\"input\":\"Hi\",\"conversation\":42}", "conversation")]
+    [InlineData("{\"model\":\"auto\",\"input\":\"Hi\",\"conversation\":{\"id\":\"conv_1\",\"extra\":1}}", "conversation")]
+    [InlineData("{\"model\":\"auto\",\"conversation\":\"conv_1\",\"previous_response_id\":\"resp_1\"}", "previous_response_id")]
     [InlineData("{\"model\":\"auto\",\"input\":\"Hi\",\"background\":true}", "background")]
     [InlineData("{\"model\":\"auto\",\"input\":\"Hi\",\"reasoning_effort\":\"medium\"}", "reasoning_effort")]
     [InlineData("{\"model\":\"auto\",\"input\":\"Hi\",\"messages\":[]}", "messages")]
@@ -50,6 +53,16 @@ public sealed class ResponsesRequestTests
 
         Assert.Null(ResponsesRequest.Validate(body, out ResponsesRequest? request));
         Assert.True(request!.HasImages);
+    }
+
+    [Theory]
+    [InlineData("{\"model\":\"auto\",\"input\":\"Hi\",\"conversation\":\"conv_1\"}")]
+    [InlineData("{\"model\":\"auto\",\"input\":[],\"conversation\":{\"id\":\"conv_1\"}}")]
+    [InlineData("{\"model\":\"auto\",\"conversation\":\"conv_1\",\"previous_response_id\":null}")]
+    public void Validate_ConversationForms_AreAccepted(string body)
+    {
+        Assert.Null(ResponsesRequest.Validate(JsonNode.Parse(body), out ResponsesRequest? request));
+        Assert.NotNull(request);
     }
 
     [Fact]

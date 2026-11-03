@@ -41,7 +41,8 @@ public sealed class RelayService(IOptions<RelayOptions> options,
         string model = request.Model;
         int? maxOutputTokens = request.MaxOutputTokens;
         List<DeploymentTarget> candidates = _deployments.Values
-            .Where(d => model == "auto" || d.Deployment.Model == model).ToList();
+            .Where(d => (model == "auto" || d.Deployment.Model == model)
+                && (request is not ResponsesRequest { EndpointId: { } endpointId } || d.EndpointId == endpointId)).ToList();
         if (candidates.Count == 0)
         {
             return new RelayOutcome(404, Error: "The requested model is not available.", ErrorParam: "model", ErrorCode: "model_not_found");
@@ -63,7 +64,22 @@ public sealed class RelayService(IOptions<RelayOptions> options,
                                     ErrorParam: request.OutputLimitField);
         }
 
-        int promptTokens = estimator.CountPromptTokens(requestBody);
+        JsonObject estimateBody = requestBody;
+        if (request is ResponsesRequest { History: { } history })
+        {
+            estimateBody = (JsonObject)requestBody.DeepClone();
+            JsonArray input = (JsonArray)history.DeepClone();
+            if (requestBody["input"] is JsonArray items)
+            {
+                foreach (JsonNode? item in items) input.Add(item?.DeepClone());
+            }
+            else if (requestBody["input"] is { } text)
+            {
+                input.Add(new JsonObject { ["role"] = "user", ["content"] = text.DeepClone() });
+            }
+            estimateBody["input"] = input;
+        }
+        int promptTokens = estimator.CountPromptTokens(estimateBody);
         Dictionary<string, long> estimates = new(StringComparer.Ordinal);
         foreach (DeploymentTarget target in candidates)
         {
@@ -135,13 +151,14 @@ public sealed class RelayService(IOptions<RelayOptions> options,
                     await tracker.RecordUsageAsync(selected.Key, actualTokens);
                 }
             }
-        }, hasStarted, requestAborted);
+        }, hasStarted, requestAborted, request is ResponsesRequest { EndpointId: not null });
     }
 
     private async Task<RelayOutcome> RelayCoreAsync(Dictionary<string, long> estimates,
                                                     Func<DeploymentTarget, CancellationToken, Task<UpstreamResult>> complete,
                                                     Func<bool>? hasStarted,
-                                                    CancellationToken requestAborted)
+                                                    CancellationToken requestAborted,
+                                                    bool stateful = false)
     {
         DateTimeOffset start = timeProvider.GetUtcNow();
         TimeSpan deadline = TimeSpan.FromSeconds(_options.RequestDeadlineSeconds);
@@ -221,6 +238,7 @@ public sealed class RelayService(IOptions<RelayOptions> options,
                     await tracker.SetCooldownAsync(deploymentName, TimeSpan.FromSeconds(_options.ErrorCooldownSeconds));
                     estimates.Remove(deploymentName);
                     lastFailure = new RelayOutcome(StatusCodes.Status504GatewayTimeout, Error: "The upstream request timed out.");
+                    if (stateful) return lastFailure;
                     continue;
                 }
                 catch (OperationCanceledException)
@@ -267,6 +285,7 @@ public sealed class RelayService(IOptions<RelayOptions> options,
                 await tracker.SetCooldownAsync(deploymentName, cooldown);
                 estimates.Remove(deploymentName);
                 lastFailure = new RelayOutcome(StatusCodes.Status429TooManyRequests, Error: "All deployments are at their limit.", RetryAfter: cooldown);
+                if (stateful) return lastFailure;
                 continue;
             }
 
@@ -276,6 +295,7 @@ public sealed class RelayService(IOptions<RelayOptions> options,
                 await tracker.SetCooldownAsync(deploymentName, TimeSpan.FromSeconds(_options.ErrorCooldownSeconds));
                 estimates.Remove(deploymentName);
                 lastFailure = new RelayOutcome(StatusCodes.Status502BadGateway, Error: "The upstream request failed.");
+                if (stateful) return lastFailure;
                 continue;
             }
 

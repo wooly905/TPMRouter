@@ -209,13 +209,36 @@ curl "http://localhost:5042/v1/responses" \
   -d '{"model":"auto","input":[{"role":"user","content":"Look up the weather in Taipei."}],"reasoning":{"effort":"medium"},"max_output_tokens":2000,"store":false,"tools":[{"type":"function","name":"get_weather","description":"Get current weather for a city.","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false},"strict":true}],"tool_choice":"auto"}'
 ```
 
-`model` and `input` are required. `input` accepts a text string or a non-empty array of input items, including text messages, reasoning items, `function_call`, and `function_call_output`. Messages may include `input_image` parts whose `image_url` is a Base64 data URL (`data:image/...`); remote image URLs, `file_id`, audio, and file content parts return `400`. Requests with images, including `model: "auto"`, only route to deployments with `SupportsVision: true`, and each image is estimated at a fixed 2000 tokens. Use `max_output_tokens` and `reasoning: {"effort": "medium"}`; Chat Completions fields such as `messages`, `max_tokens`, `max_completion_tokens`, `reasoning_effort`, and `n` return `400`. Function tools use top-level `name`, `parameters`, and `strict`. Remaining options are forwarded unchanged; the selected upstream deployment must support Responses and the requested options.
+`model` is required. Without `conversation`, `input` is also required. `input` accepts a text string or a non-empty array of input items, including text messages, reasoning items, `function_call`, and `function_call_output`. Messages may include `input_image` parts whose `image_url` is a Base64 data URL (`data:image/...`); remote image URLs, `file_id`, audio, and file content parts return `400`. Requests with images, including `model: "auto"`, only route to deployments with `SupportsVision: true`, and each image is estimated at a fixed 2000 tokens. Use `max_output_tokens` and `reasoning: {"effort": "medium"}`; Chat Completions fields such as `messages`, `max_tokens`, `max_completion_tokens`, `reasoning_effort`, and `n` return `400`. Function tools use top-level `name`, `parameters`, and `strict`. Remaining options are forwarded unchanged; the selected upstream deployment must support Responses and the requested options.
 
 The router uses global priorities, rolling TPM/RPM budgets, cooldowns, and failover. It replaces `model` with the selected deployment name and supplies `max_output_tokens` from `MaxOutputTokens` when omitted. An explicit output limit excludes deployments whose cap is smaller; the limit is never silently reduced. Estimates include instructions, all input items and tool results, tools, and `text` output schemas.
 
-The complete upstream response is preserved, including `output`, function arguments, reasoning items, usage, and response status. `encrypted_content` is removed from requests and responses, including streamed events. That ciphertext is issued for one Azure resource and cannot be verified by another, so replaying it would fail when a later turn is routed elsewhere. Reasoning item ids and summaries are kept. To continue a function call, execute each returned `output` item whose `type` is `function_call` in the client. Append the returned output items to your existing input history, including reasoning items, then append `{"type":"function_call_output","call_id":"<returned-call-id>","output":"<tool-result>"}` for each call and send the full history to `/v1/responses` again with `model: "auto"`.
+The upstream response preserves `output`, function arguments, reasoning items, usage, and response status. Requests without `conversation` can route across resources. The router removes their `encrypted_content` from requests, responses, and streamed events because Azure binds ciphertext to one resource. Reasoning item IDs and summaries remain intact. For these stateless requests, append all returned output items and each `function_call_output` to the input history before the next request.
 
-Each request must carry its full history so the router can estimate its token budget and route across endpoints. `previous_response_id`, `conversation`, stored `item_reference` inputs, and `background: true` return `400`. Retrieval and conversation-management endpoints are not exposed. Use synchronous requests or `stream: true`.
+To use stored state, create a conversation with `POST /v1/conversations`. Send its returned ID as `conversation: "<id>"` or `conversation: {"id":"<id>"}` in each Responses request. `input` can be omitted or empty when a conversation supplies the context. The upstream resource stores input and output items in order, including reasoning, function calls, and tool results. Send only new input items on later turns. For a tool result, send `{"type":"function_call_output","call_id":"<returned-call-id>","output":"<tool-result>"}` with the same conversation. The router does not execute tools.
+
+Conversation requests stay on their original Azure resource and retain reasoning ciphertext. Before token estimation, the router reads every history page in ascending order. The reservation includes stored history, new input, instructions, tools, schemas, and the output limit. Stored images require a vision-capable deployment and receive the usual image allowance. Conversation requests use the existing TPM/RPM tracker, including shared Redis budgets. Serialize operations on each conversation so history cannot change between estimation and generation.
+
+Conversation IDs contain a versioned routing prefix, a resource fingerprint, and the upstream ID. Treat the entire returned ID as opaque. Every router instance must use matching endpoint IDs and resource URIs. Keep both stable across restarts. No router-local state or new database is required; Azure owns conversation persistence. Reordering endpoints or changing priorities does not change existing routes. Native Azure IDs and unknown resource fingerprints return `404` without probing other resources.
+
+Creation selects the resource with the lowest deployment priority, then endpoint ID. Existing conversations only use matching models on their resource. An unavailable model returns `404`; exhausted eligible budgets return `429`. The router never retries a conversation mutation or generation attempt on another deployment or resource. A timeout or connection failure can leave the upstream outcome unknown. Inspect the conversation before retrying such a request.
+
+`previous_response_id` remains unsupported and cannot accompany `conversation`. Stored `item_reference` inputs and `background: true` still return `400`. Response retrieval endpoints remain unavailable. Use synchronous requests or `stream: true`.
+
+### Conversation management
+
+These routes require `Authorization: Bearer <client-key>` and an upstream resource with the Conversations API:
+
+- `POST /v1/conversations`: create a conversation with optional `metadata` and initial `items`.
+- `GET /v1/conversations/{conversation_id}`: retrieve a conversation.
+- `POST /v1/conversations/{conversation_id}`: update metadata.
+- `DELETE /v1/conversations/{conversation_id}`: delete a conversation.
+- `POST /v1/conversations/{conversation_id}/items`: append items.
+- `GET /v1/conversations/{conversation_id}/items`: list items.
+- `GET /v1/conversations/{conversation_id}/items/{item_id}`: retrieve an item.
+- `DELETE /v1/conversations/{conversation_id}/items/{item_id}`: delete an item.
+
+Create and append operations accept up to 20 items per call. List operations pass through `after`, `limit`, `order`, and `include[]`. Item retrieval and creation also pass through `include[]`. Item IDs remain unchanged. Metadata, pagination, deletion semantics, and validation errors follow the upstream [Conversations API](https://developers.openai.com/api/reference/typescript/resources/conversations). Management operations use no model tokens and do not reserve inference TPM/RPM. Upstream errors retain their status and details in the OpenAI error envelope.
 
 Streaming preserves native Responses SSE events, including function argument deltas and `response.completed`, `response.incomplete`, or `response.failed`. A missing terminal event, timeout, or cancellation aborts the stream after it starts, without switching deployments. Errors before streaming starts use the OpenAI-compatible error format and status codes below.
 
@@ -223,17 +246,30 @@ OpenAI SDK clients can set their base URL to `https://<router-host>/v1/` and use
 
 ```csharp
 using System.ClientModel;
+using OpenAI;
+using OpenAI.Conversations;
 using OpenAI.Responses;
 
 #pragma warning disable OPENAI001 // ResponsesClient is experimental in this SDK version.
 
-ResponsesClient client = new(new ApiKeyCredential("<client-key>"), new ResponsesClientOptions
+OpenAIClient client = new(new ApiKeyCredential("<client-key>"), new OpenAIClientOptions
 {
     Endpoint = new Uri("https://<router-host>/v1/"),
 });
-CreateResponseOptions options = new() { Model = "auto", StoredOutputEnabled = false };
+ConversationResource conversation = await client.GetConversationClient()
+    .CreateConversationAsync(new ConversationCreationOptions());
+CreateResponseOptions options = new()
+{
+    Model = "auto",
+    ConversationOptions = new ResponseConversationOptions(conversation.Id),
+};
 options.InputItems.Add(ResponseItem.CreateUserMessageItem("Hello"));
-ResponseResult response = await client.CreateResponseAsync(options);
+ResponseResult response = await client.GetResponsesClient().CreateResponseAsync(options);
+Console.WriteLine(response.GetOutputText());
+
+options.InputItems.Clear();
+options.InputItems.Add(ResponseItem.CreateUserMessageItem("Continue our conversation."));
+response = await client.GetResponsesClient().CreateResponseAsync(options);
 Console.WriteLine(response.GetOutputText());
 ```
 
@@ -270,3 +306,5 @@ dotnet test TPMRouter.slnx
 ```
 
 The integration tests use WireMock and a local HTTP server for upstream behavior, exercise the official OpenAI .NET SDK against the router, and need Docker for Redis containers. They cover routing across independent endpoints, credentials, global priorities, model aliases, same-named deployment isolation, failover, SSE, and shared Redis budgets across instances. They do not call a live Azure OpenAI deployment.
+
+Conversation tests cover lifecycle routes, tool results, ordered reasoning items, paginated history estimates, SDK turns, SSE IDs, invalid IDs, and authentication. They also verify restart routing, resource replacement, safe failure behavior, and shared Redis RPM budgets.

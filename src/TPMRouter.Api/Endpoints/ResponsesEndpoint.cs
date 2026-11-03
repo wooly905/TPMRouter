@@ -46,8 +46,24 @@ public static class ResponsesEndpoint
             return OpenAIError.Result(invalid);
         }
 
-        // Ciphertext is bound to the Azure resource that created it. Drop it so the next turn can use another resource.
-        if (!chatCompletion)
+        string? conversationId = null;
+        if (request is ResponsesRequest responses && responses.Body["conversation"] is not null)
+        {
+            (ResponsesRequest prepared, RelayOutcome? error) = await context.RequestServices
+                .GetRequiredService<ConversationService>().PrepareAsync(responses, context.RequestAborted);
+            if (error is not null)
+            {
+                if (error.RetryAfter is { } retry)
+                    context.Response.Headers.RetryAfter = Math.Max(1, (int)Math.Ceiling(retry.TotalSeconds))
+                        .ToString(System.Globalization.CultureInfo.InvariantCulture);
+                return OpenAIError.Result(error);
+            }
+            request = prepared;
+            conversationId = prepared.RouterConversationId;
+        }
+
+        // Conversation requests stay on one resource and can retain its reasoning ciphertext.
+        if (!chatCompletion && conversationId is null)
         {
             EncryptedReasoning.Strip(request!.Body);
         }
@@ -56,7 +72,7 @@ public static class ResponsesEndpoint
         RelayOutcome outcome = await service.RelayResponseAsync(request!,
                                                                 (response, token) => chatCompletion
                                                                     ? ChatCompletionEndpoint.CopyStreamAsync(response, context, streamedUsage, token)
-                                                                    : CopyStreamAsync(response, context, streamedUsage, token),
+                                                                    : CopyStreamAsync(response, context, streamedUsage, token, conversationId),
                                                                 () => context.Response.HasStarted,
                                                                 context.RequestAborted,
                                                                 streamedUsage,
@@ -79,12 +95,12 @@ public static class ResponsesEndpoint
         }
 
         return outcome.Content is not null && outcome.StatusCode is >= 200 and < 300
-            ? Results.Content(chatCompletion ? outcome.Content.ToString() : EncryptedReasoning.StripJson(outcome.Content.ToString()), "application/json", Encoding.UTF8, outcome.StatusCode)
+            ? Results.Content(chatCompletion ? outcome.Content.ToString() : ConversationService.RewriteResponse(outcome.Content.ToString(), conversationId), "application/json", Encoding.UTF8, outcome.StatusCode)
             : OpenAIError.Result(outcome);
     }
 
     private static async Task CopyStreamAsync(PipelineResponse response, HttpContext context,
-                                               UsageRecordBuilder usage, CancellationToken token)
+                                               UsageRecordBuilder usage, CancellationToken token, string? conversationId)
     {
         using StreamReader reader = new(response.ContentStream!, Encoding.UTF8);
         context.Response.ContentType = "text/event-stream";
@@ -94,7 +110,7 @@ public static class ResponsesEndpoint
         {
             if (line.StartsWith("data:", StringComparison.Ordinal))
             {
-                string payload = EncryptedReasoning.StripJson(line[5..].TrimStart());
+                string payload = ConversationService.RewriteResponse(line[5..].TrimStart(), conversationId);
                 data.AppendLine(payload);
                 line = "data: " + payload;
             }

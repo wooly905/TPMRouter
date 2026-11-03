@@ -32,6 +32,9 @@ builder.Services.AddSingleton<ITokenBudgetTracker>(sp =>
         : sp.GetRequiredService<InMemoryTokenBudgetTracker>());
 builder.Services.AddSingleton<RelayMetrics>();
 builder.Services.AddSingleton<RelayService>();
+builder.Services.AddHttpClient<ConversationService>((sp, client) =>
+    client.Timeout = TimeSpan.FromSeconds(sp.GetRequiredService<IOptions<RelayOptions>>().Value.UpstreamTimeoutSeconds))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddSingleton<UsageHistoryStore>();
 
 builder.Services.AddHealthChecks();
@@ -67,6 +70,8 @@ app.MapHealthChecks("/healthz");
 
 app.MapPost("/v1/responses", ResponsesEndpoint.HandleAsync)
     .WithMetadata(new ApiKeyRequirement(ApiKeyScope.Client, OpenAICompatible: true));
+
+app.MapConversations();
 
 app.MapPost("/v1/chat/completions", ChatCompletionEndpoint.HandleAsync)
     .WithMetadata(new ApiKeyRequirement(ApiKeyScope.Client, OpenAICompatible: true));

@@ -5,6 +5,10 @@ namespace TPMRouter.Api.Relay;
 public sealed record ResponsesRequest(JsonObject Body, string Model, bool Stream, int? MaxOutputTokens, bool HasImages = false)
     : RelayRequest(Body, Model, Stream, MaxOutputTokens, HasImages)
 {
+    public string? EndpointId { get; init; }
+    public string? RouterConversationId { get; init; }
+    public JsonArray? History { get; init; }
+
     public static RelayOutcome? Validate(JsonNode? body, out ResponsesRequest? request)
     {
         request = null;
@@ -18,13 +22,20 @@ public sealed record ResponsesRequest(JsonObject Body, string Model, bool Stream
             return Invalid("The 'model' field is required and must be a non-empty string.", "model");
         }
 
-        foreach (string field in new[] { "previous_response_id", "conversation" })
+        if (json["previous_response_id"] is not null)
         {
-            if (json[field] is not null)
-            {
-                return Invalid("Send the full conversation in 'input' so it can be routed across endpoints and counted in the token budget.",
-                               field, "unsupported_value");
-            }
+            return Invalid(json["conversation"] is not null
+                ? "The 'previous_response_id' and 'conversation' fields are mutually exclusive."
+                : "Send the full history in 'input' or use 'conversation' instead of 'previous_response_id'.",
+                "previous_response_id", "unsupported_value");
+        }
+
+        if (json["conversation"] is { } conversation
+            && (!TryString(conversation is JsonObject obj ? obj["id"] : conversation, out string? id)
+                || string.IsNullOrWhiteSpace(id)
+                || (conversation is JsonObject options && options.Any(p => p.Key != "id"))))
+        {
+            return Invalid("The 'conversation' field must be an ID string or an object containing an 'id' string.", "conversation");
         }
 
         foreach (string field in new[] { "messages", "max_tokens", "max_completion_tokens", "reasoning_effort", "n" })
@@ -36,7 +47,8 @@ public sealed record ResponsesRequest(JsonObject Body, string Model, bool Stream
             }
         }
 
-        if (!TryString(json["input"], out _) && json["input"] is not JsonArray { Count: > 0 })
+        if (!TryString(json["input"], out _) && json["input"] is not JsonArray { Count: > 0 }
+            && !(json["conversation"] is not null && (json["input"] is null || json["input"] is JsonArray { Count: 0 })))
         {
             return Invalid("The 'input' field must be a text string or a non-empty array of input items.", "input");
         }
