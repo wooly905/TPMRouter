@@ -4,11 +4,13 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Options;
+using TPMRouter.Api.Budget;
 using TPMRouter.Api.Options;
 
 namespace TPMRouter.Api.Relay;
 
-public sealed class ConversationService(HttpClient client, IOptions<RelayOptions> options)
+public sealed class ConversationService(HttpClient client, IOptions<RelayOptions> options,
+    ITokenBudgetTracker tracker, TimeProvider timeProvider)
 {
     private readonly RelayOptions _options = options.Value;
 
@@ -47,8 +49,7 @@ public sealed class ConversationService(HttpClient client, IOptions<RelayOptions
         string path = "conversations";
         if (id is null)
         {
-            endpoint = _options.Endpoints.OrderBy(e => e.Deployments.Min(d => d.Priority))
-                .ThenBy(e => e.Id, StringComparer.Ordinal).First();
+            endpoint = await SelectEndpointAsync();
         }
         else
         {
@@ -74,8 +75,21 @@ public sealed class ConversationService(HttpClient client, IOptions<RelayOptions
         return result;
     }
 
+    // Later turns cannot leave this resource, so place new conversations where the most budget is free.
+    private async Task<EndpointOptions> SelectEndpointAsync()
+    {
+        DateTimeOffset now = timeProvider.GetUtcNow();
+        IReadOnlyList<DeploymentStatus> statuses = await tracker.GetStatusAsync();
+        return _options.Endpoints
+            .OrderByDescending(e => statuses.Where(s => s.EndpointId == e.Id && !(s.CooldownUntil > now))
+                .Sum(s => Math.Max(0, s.AvailableTokens)))
+            .ThenBy(e => e.Deployments.Min(d => d.Priority))
+            .ThenBy(e => e.Id, StringComparer.Ordinal).First();
+    }
+
     public async Task<(ResponsesRequest Request, RelayOutcome? Error)> PrepareAsync(ResponsesRequest request, CancellationToken token)
     {
+        DateTimeOffset startedAt = timeProvider.GetUtcNow();
         JsonNode conversation = request.Body["conversation"]!;
         string id = (conversation is JsonObject obj ? obj["id"]! : conversation).GetValue<string>();
         (EndpointOptions? endpoint, string? native) = Resolve(id);
@@ -115,7 +129,7 @@ public sealed class ConversationService(HttpClient client, IOptions<RelayOptions
             .SelectMany(item => item["content"] as JsonArray ?? []).OfType<JsonObject>()
             .Any(part => part["type"]?.GetValue<string>() == "input_image");
         return (request with { EndpointId = endpoint.Id, RouterConversationId = id, History = history,
-            HasImages = request.HasImages || hasImages }, null);
+            HasImages = request.HasImages || hasImages, StartedAt = startedAt }, null);
     }
 
     public static string RewriteResponse(string text, string? id)
@@ -126,9 +140,9 @@ public sealed class ConversationService(HttpClient client, IOptions<RelayOptions
         {
             json = JsonNode.Parse(text) as JsonObject;
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
-            throw new IOException("The upstream sent invalid Responses JSON.", ex);
+            return text;
         }
         JsonObject? response = json?["response"] as JsonObject ?? json;
         if (response?["conversation"] is JsonObject conversation) conversation["id"] = id;

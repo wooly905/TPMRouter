@@ -8,6 +8,7 @@ using OpenAI;
 using OpenAI.Conversations;
 using OpenAI.Responses;
 using TPMRouter.Api.Budget;
+using TPMRouter.Api.Relay;
 using WireMock.Matchers;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
@@ -152,6 +153,7 @@ public sealed class ConversationEndpointTests : IDisposable
             ["input"] = new JsonArray(new JsonObject { ["role"] = "user", ["content"] = "lookup" }),
         }) + 100;
         foreach (JsonNode? item in results) history.Add(item!.DeepClone());
+        EncryptedReasoning.Strip(history);
         expected += estimator.CountPromptTokens(new JsonObject { ["input"] = history }) + 100;
         var status = await client.GetFromJsonAsync<JsonArray>("/relay/dashboard/status");
         Assert.Equal(expected, status![0]!["reservedTokens"]!.GetValue<long>());
@@ -185,7 +187,7 @@ public sealed class ConversationEndpointTests : IDisposable
     [InlineData(500)]
     [InlineData(503)]
     [InlineData(400)]
-    public async Task StatefulFailure_NeverRetriesAnotherDeploymentOrResource(int status)
+    public async Task StatefulFailure_NeverRetriesAnotherResource(int status)
     {
         using WireMockServer other = WireMockServer.Start();
         await using RelayAppFactory app = new([
@@ -197,9 +199,41 @@ public sealed class ConversationEndpointTests : IDisposable
         Stub("POST", Upstream.ResponsesPath, """{"error":{"message":"failure","type":"invalid_request_error","code":"test"}}""", status);
         using HttpResponseMessage response = await Turn(client, id, JsonValue.Create("next")!);
         Assert.Equal(status >= 500 ? HttpStatusCode.BadGateway : (HttpStatusCode)status, response.StatusCode);
-        Assert.Single(_upstream.LogEntries, e => e.RequestMessage!.Path == Upstream.ResponsesPath);
+        // Only a 429 is known to leave the conversation unchanged, so only it moves to the same resource's next deployment.
+        Assert.Equal(status == 429 ? 2 : 1, _upstream.LogEntries.Count(e => e.RequestMessage!.Path == Upstream.ResponsesPath));
         Assert.Empty(other.LogEntries);
         if (status == 429) Assert.NotNull(response.Headers.RetryAfter);
+    }
+
+    [Fact]
+    public async Task Creation_PrefersResourceWithMoreFreeBudget()
+    {
+        using WireMockServer other = WireMockServer.Start();
+        await using RelayAppFactory app = new([
+            new("small", _upstream, [new("small-dep", TokensPerMinute: 1000, Priority: 0)]),
+            new("large", other, [new("large-dep", TokensPerMinute: 100000, Priority: 1)])]);
+        using HttpClient client = app.CreateOpenAIClient();
+        other.Given(Request.Create().WithPath(Path).UsingPost())
+            .RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody(Conversation));
+        using HttpResponseMessage response = await client.PostAsJsonAsync("/v1/conversations", new { });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Single(other.LogEntries);
+        Assert.Empty(_upstream.LogEntries);
+    }
+
+    [Fact]
+    public async Task ManagementQuery_ForwardsOnlyDocumentedParameters()
+    {
+        await using RelayAppFactory app = new(_upstream, [new("dep")]);
+        using HttpClient client = app.CreateOpenAIClient();
+        string id = await CreateAsync(client);
+        History();
+        using HttpResponseMessage response = await client.GetAsync($"/v1/conversations/{id}/items?limit=5&api-version=preview&order=desc");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        string url = _upstream.LogEntries.Last().RequestMessage!.Url!;
+        Assert.Contains("limit=5", url);
+        Assert.Contains("order=desc", url);
+        Assert.DoesNotContain("api-version", url);
     }
 
     [Theory]

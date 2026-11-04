@@ -9,6 +9,9 @@ public sealed record ResponsesRequest(JsonObject Body, string Model, bool Stream
     public string? RouterConversationId { get; init; }
     public JsonArray? History { get; init; }
 
+    // Set when history loading starts so it counts toward the request deadline.
+    public DateTimeOffset? StartedAt { get; init; }
+
     public static RelayOutcome? Validate(JsonNode? body, out ResponsesRequest? request)
     {
         request = null;

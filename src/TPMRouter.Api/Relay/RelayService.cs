@@ -69,6 +69,8 @@ public sealed class RelayService(IOptions<RelayOptions> options,
         {
             estimateBody = (JsonObject)requestBody.DeepClone();
             JsonArray input = (JsonArray)history.DeepClone();
+            // Ciphertext is opaque to the model's prompt; counting its Base64 text inflates the estimate.
+            EncryptedReasoning.Strip(input);
             if (requestBody["input"] is JsonArray items)
             {
                 foreach (JsonNode? item in items) input.Add(item?.DeepClone());
@@ -151,21 +153,23 @@ public sealed class RelayService(IOptions<RelayOptions> options,
                     await tracker.RecordUsageAsync(selected.Key, actualTokens);
                 }
             }
-        }, hasStarted, requestAborted, request is ResponsesRequest { EndpointId: not null });
+        }, hasStarted, requestAborted, request is ResponsesRequest { EndpointId: not null }, (request as ResponsesRequest)?.StartedAt);
     }
 
     private async Task<RelayOutcome> RelayCoreAsync(Dictionary<string, long> estimates,
                                                     Func<DeploymentTarget, CancellationToken, Task<UpstreamResult>> complete,
                                                     Func<bool>? hasStarted,
                                                     CancellationToken requestAborted,
-                                                    bool stateful = false)
+                                                    bool stateful = false,
+                                                    DateTimeOffset? startedAt = null)
     {
-        DateTimeOffset start = timeProvider.GetUtcNow();
+        DateTimeOffset start = startedAt ?? timeProvider.GetUtcNow();
         TimeSpan deadline = TimeSpan.FromSeconds(_options.RequestDeadlineSeconds);
         DateTimeOffset deadlineAt = start + deadline;
         DateTimeOffset queueLimitAt = start + TimeSpan.FromSeconds(Math.Min(_options.MaxQueueWaitSeconds, _options.RequestDeadlineSeconds));
 
-        using CancellationTokenSource deadlineCts = new(deadline, timeProvider);
+        TimeSpan untilDeadline = deadlineAt - timeProvider.GetUtcNow();
+        using CancellationTokenSource deadlineCts = new(untilDeadline > TimeSpan.Zero ? untilDeadline : TimeSpan.Zero, timeProvider);
         using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(requestAborted, deadlineCts.Token);
         CancellationToken token = linkedCts.Token;
 
@@ -284,8 +288,8 @@ public sealed class RelayService(IOptions<RelayOptions> options,
                 logger.LogWarning("Deployment {Deployment} returned 429. Cooldown {Cooldown}.", deploymentName, cooldown);
                 await tracker.SetCooldownAsync(deploymentName, cooldown);
                 estimates.Remove(deploymentName);
+                // A 429 leaves the conversation unchanged, so stateful requests can try another deployment on the same resource.
                 lastFailure = new RelayOutcome(StatusCodes.Status429TooManyRequests, Error: "All deployments are at their limit.", RetryAfter: cooldown);
-                if (stateful) return lastFailure;
                 continue;
             }
 

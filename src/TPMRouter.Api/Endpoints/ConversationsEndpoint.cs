@@ -57,10 +57,15 @@ public static class ConversationsEndpoint
                 return OpenAIError.Result(new(400, Error: "The item ID is invalid.", ErrorParam: "item_id", ErrorCode: "invalid_value"));
             suffix += "/" + Uri.EscapeDataString(itemId);
         }
+        // Forward only the documented Conversations API query parameters.
+        QueryString query = QueryString.Create(context.Request.Query
+            .Where(p => p.Key is "after" or "limit" or "order" or "include" or "include[]")
+            .SelectMany(p => p.Value.Select(v => KeyValuePair.Create(p.Key, v))));
         RelayOutcome outcome = await service.ManageAsync(new HttpMethod(context.Request.Method), id, suffix,
-            context.Request.QueryString.Value ?? "", body, context.RequestAborted);
+            query.Value ?? "", body, context.RequestAborted);
         if (outcome.RetryAfter is { } retry)
-            context.Response.Headers.RetryAfter = Math.Max(1, (int)Math.Ceiling(retry.TotalSeconds)).ToString();
+            context.Response.Headers.RetryAfter = Math.Max(1, (int)Math.Ceiling(retry.TotalSeconds))
+                .ToString(System.Globalization.CultureInfo.InvariantCulture);
         return outcome.StatusCode is >= 200 and < 300 && outcome.Content is { } content
             ? Results.Content(content.ToString(), "application/json", Encoding.UTF8, outcome.StatusCode)
             : OpenAIError.Result(outcome);
